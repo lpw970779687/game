@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的游戏站</title>
+    <style>
+        body {
+            background: radial-gradient(ellipse at 50% -20%, #16233d 0%, #0b0f1a 55%, #070a12 100%);
+            color: #e2e8f0;
+            font-family: sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+        h1 {
+            font-size: 30px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            margin: 0 0 28px;
+            background: linear-gradient(90deg, #38bdf8, #a78bfa 55%, #34d399);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .card {
+            display: block;
+            width: 100%;
+            max-width: 420px;
+            padding: 26px 28px;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #131a2e 0%, #0d1224 100%);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            box-shadow: 0 0 40px rgba(56, 189, 248, 0.08);
+            text-decoration: none;
+            color: inherit;
+            transition: transform .2s, box-shadow .2s, border-color .2s;
+        }
+        .card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(56, 189, 248, 0.5);
+            box-shadow: 0 0 50px rgba(56, 189, 248, 0.25);
+        }
+        .card h2 {
+            margin: 0 0 10px;
+            font-size: 20px;
+            color: #7dd3fc;
+        }
+        .card p {
+            margin: 0;
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .card .enter {
+            margin-top: 16px;
+            display: inline-block;
+            font-size: 14px;
+            letter-spacing: 2px;
+            color: #34d399;
+        }
+    </style>
+</head>
+<body>
+    <h1>我的游戏站</h1>
+    <a class="card" href="Particle_Territory_War.html">
+        <h2>Plinko 粒子领地争夺</h2>
+        <p>四阵营自动演算的 Plinko 粒子领地争夺模拟器，点击进入观战。</p>
+        <span class="enter">&gt; 进入游戏 &lt;</span>
+    </a>
+</body>
+</html>

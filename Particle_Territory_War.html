@@ -1,0 +1,1865 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Plinko 粒子领地争夺 (极速 ImageData 加速版)</title>
+    <style>
+        body {
+            background: radial-gradient(ellipse at 50% -20%, #16233d 0%, #0b0f1a 55%, #070a12 100%);
+            color: #e2e8f0;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            padding: 10px;
+            min-height: 100vh;
+        }
+        h1 {
+            margin-bottom: 10px;
+            font-size: 24px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            background: linear-gradient(90deg, #38bdf8, #a78bfa 55%, #34d399);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            text-shadow: 0 0 20px rgba(56, 189, 248, 0.25);
+        }
+        #game-container {
+            display: flex;
+            gap: 20px;
+            padding: 15px;
+            border-radius: 14px;
+            background: linear-gradient(180deg, #131a2e 0%, #0d1224 100%);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            box-shadow: 0 0 40px rgba(56, 189, 248, 0.08), inset 0 0 30px rgba(0, 0, 0, 0.5);
+        }
+        canvas {
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            border-radius: 6px;
+            background-color: #0a0f1c;
+            box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.8);
+        }
+        /* 启动覆盖层:点击解锁音频(浏览器要求用户手势才能出声) */
+        #startOverlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: radial-gradient(ellipse at center, #16233d 0%, #0b0f1a 60%, #070a12 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            cursor: pointer;
+            text-align: center;
+        }
+        #startOverlay h2 {
+            font-size: 34px;
+            margin-bottom: 14px;
+            font-weight: 700;
+            letter-spacing: 3px;
+            background: linear-gradient(90deg, #38bdf8, #a78bfa 55%, #34d399);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            text-shadow: 0 0 30px rgba(56, 189, 248, 0.3);
+        }
+        #startOverlay p { color: #94a3b8; font-size: 15px; margin: 4px 0; letter-spacing: 1px; }
+        #startOverlay .btn {
+            margin-top: 26px;
+            padding: 13px 42px;
+            font-size: 17px;
+            letter-spacing: 3px;
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            color: #7dd3fc;
+            background: rgba(56, 189, 248, 0.08);
+            border-radius: 30px;
+            box-shadow: 0 0 18px rgba(56, 189, 248, 0.2), inset 0 0 12px rgba(56, 189, 248, 0.08);
+            transition: background 0.25s, box-shadow 0.25s;
+        }
+        #startOverlay:hover .btn {
+            background: rgba(56, 189, 248, 0.18);
+            box-shadow: 0 0 30px rgba(56, 189, 248, 0.45), inset 0 0 16px rgba(56, 189, 248, 0.15);
+        }
+        #startOverlay.hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <h1>Plinko 粒子领地争夺模拟器 (带倍数触发统计版)</h1>
+    <div id="game-container">
+        <!-- 左侧 Plinko 界面 (520x910) -->
+        <canvas id="plinkoCanvas" width="520" height="910"></canvas>
+        <!-- 右侧 战场与领地 界面 (910x910) -->
+        <canvas id="battleCanvas" width="910" height="910"></canvas>
+    </div>
+
+    <div id="startOverlay">
+        <h2>Plinko 粒子领地争夺模拟器</h2>
+        <p>点击屏幕解锁科幻音效,进入自动观战</p>
+        <p>四阵营自动演算 · 无需操作</p>
+        <div class="btn">&gt; 开始 &lt;</div>
+    </div>
+
+<script>
+// ==================== 游戏平衡性与参数配置宏 ====================
+const CONFIG = {
+    // ========== 画布与领地 ==========
+    PLINKO_WIDTH: 520,             // 左侧 Plinko 画布宽度
+    PLINKO_HEIGHT: 910,            // 左侧 Plinko 画布高度
+    BATTLE_SIZE: 910,              // 右侧战场画布边长
+    CELL_SIZE: 3,                  // 领地格子边长 (px)
+    LAND_COST: 1,                  // 占领每个格子消耗的子弹面值
+    TERRITORY_ALPHA: 115,          // 领地像素透明度 (0-255)
+
+    // ========== Plinko 布局 ==========
+    PEG_TOP_ROWS: 4,               // 上部钉阵行数
+    PEG_BOTTOM_ROWS: 4,            // 下部钉阵行数
+    PEG_COLS: 7,                   // 钉阵列数
+    PEG_START_X: 65,               // 首列钉子 x
+    PEG_STEP_X: 65,                // 钉子水平间距
+    PEG_OFFSET_X: 32.5,            // 偶数行水平偏移
+    PEG_ROW_GAP: 45.5,             // 钉子垂直间距
+    PEG_TOP_Y: 130,                // 上部钉阵起始 y
+    PEG_BOTTOM_Y: 585,             // 下部钉阵起始 y
+    PEG_RADIUS: 5,                 // 钉子半径
+    PEG_RESTITUTION: 0.7,          // 碰钉反弹恢复系数（<1 有能量损耗）
+    PEG_JITTER: 0.5,               // 碰钉反弹的随机抖动幅度
+    BALL_RADIUS: 10,               // Plinko 小球基础半径
+    BALL_MAX_RADIUS: 15,           // Plinko 小球随价值增长的最大半径
+    BALL_RADIUS_SCALE: 1.0001,        // Plinko 小球半径-价值对数系数
+    BALL_START_VAL: 1,             // Plinko 小球初始面值
+    SLOT_TOP: 338,                 // 倍数槽区域顶部
+    SLOT_BOTTOM: 390,              // 倍数槽区域底部
+    SLOT_WALL_WIDTH: 6,            // 倍数槽之间隔墙的宽度（px）
+    ACTION_TOP: 810,               // 机制区顶部
+    ACTION_BOTTOM: 880,            // 机制区底部
+
+    // Plinko 倍数槽布局: [宽度, 倍数, 是否出口, 标签]
+    SLOT_LAYOUT: [
+        // { w: 40, mult: 8, isOpen: false, text: 'x8' },
+        // { w: 56, mult: 4, isOpen: false, text: 'x4' },
+        // { w: 92, mult: 2, isOpen: false, text: 'x2' },
+        // { w: 144, mult: 1, isOpen: true,  text: '出口' },
+        // { w: 92, mult: 2, isOpen: false, text: 'x2' },
+        // { w: 56, mult: 4, isOpen: false, text: 'x4' },
+        // { w: 40, mult: 8, isOpen: false, text: 'x8' }
+        { w: 40, mult: 8, isOpen: false, text: 'x4' },
+        { w: 148, mult: 2, isOpen: false, text: 'x2' },
+        { w: 144, mult: 1, isOpen: true,  text: '出口' },
+        { w: 148, mult: 2, isOpen: false, text: 'x2' },
+        { w: 40, mult: 8, isOpen: false, text: 'x4' }
+    ],
+    MECHANISM_ACTIONS: ['护盾', '子弹', '散弹', '大球'],
+
+    // ========== 小球发射与物理 ==========
+    BALL_SPAWN_X: 260,             // 出生中心 x
+    BALL_SPAWN_SPREAD_X: 200,       // 出生 x 随机范围
+    BALL_SPAWN_Y: 26,              // 出生 y
+    BALL_SPAWN_VX_RANGE: 0.5,      // 初始水平速度随机范围
+    BALL_SPAWN_VY_BASE: 0.5,       // 初始垂直速度
+    BALL_SPAWN_VY_RANDOM: 0.5,     // 初始垂直速度随机加成
+    BALL_RESET_Y: 10,              // 倍数翻倍重置后的 y
+    BALL_GRAVITY: 0.03,            // 重力加速度
+    BALL_MAX_SPEED: 10,           // 小球下落速度上限
+    EXIT_UPDRAFT: 0.4,           // 出口通道上升气流强度（粒子少的球被吹起）
+    EXIT_UPDRAFT_LOG: 1,        // 上升气流随粒子数 val 的对数衰减系数
+    EXIT_UPDRAFT_BELOW: 0.25,    // 出口下方附加上升气流强度（更强的升力层）
+    BALL_WALL_RESTITUTION: 0.85, // 侧壁反弹系数
+    SLOT_WALL_RESTITUTION: 0.85, // 槽壁反弹系数
+    BALL_COLLISION_RESTITUTION: 0.6, // 小球间碰撞恢复系数（<1 碰撞更柔和）
+    WAVE_INTERVAL_MS: 30000,       // 小球波次间隔（全存活时）
+    WAVE_INTERVAL_MIN_MS: 5000,    // 小球波次间隔下限（只剩 1 个炮台时）
+    WAVE_STAGGER_MS: 250,          // 各颜色出生错峰
+
+    // ========== 子弹与炮台 ==========
+    BULLET_FIRE_INTERVAL: 10,      // 炮台发射时间间隔 (ms)
+    BULLET_SPEED: 2,             // 子弹飞行速度
+    BULLET_BASE_SHOTS: 2,          // 单次连发数量（平时与防空一致）
+    BULLET_SPREAD_ANGLE: 0.035,    // 子弹扇形散射弧度间隔
+    BULLET_SPREAD_JITTER: 0.02,    // 子弹散射角随机抖动
+    BULLET_VAL: 1,                 // 单发子弹面值 / 弹药消耗
+    TURRET_MUZZLE_OFFSET: 26,      // 炮口出弹点距基地中心距离
+    TURRET_LENGTH: 32,             // 炮管长度
+    TURRET_WIDTH: 10,              // 炮管宽度
+
+    // ========== 防空与跟踪 ==========
+    DEFENSE_ALERT_RADIUS: 280,     // 大球防空警戒半径 (px)
+    TURRET_ROTATION_CRUISE: 0.003, // 平稳巡航自转速度
+    TURRET_TRACKING_SPEED: 0.35,   // 锁定大球时的炮口转速
+    MISSILE_RADIUS_FACTOR: 0.5,    // 防空导弹半径 = 被拦截大球的一半
+    MISSILE_SPEED: 6.0,            // 防空导弹飞行速度
+    MISSILE_COOLDOWN_MS: 1500,     // 防空导弹发射冷却（避免连续狂发）
+    MISSILE_TURN_SPEED: 0.06,      // 导弹追踪转向速度（弧度/帧）
+    MISSILE_DISTANCE_BANDS: 5,     // 按距离划分的档位数量（越近携带粒子越多）
+
+    // ========== 大球 ==========
+    BIG_BALL_SPEED: 0.5,           // 大球最小初始飞行速度（越大越慢）
+    BIG_BALL_SPEED_MAX: 1,       // 大球最大初始飞行速度（越小越快）
+    BIG_BALL_VOLUME_SCALE: 2.0,    // 大球体积-速度调节系数
+    BIG_BALL_MASS_FACTOR: 8,       // 大球惯性系数
+    BIG_BALL_MASS_FLOOR: 20,       // 大球质量下限
+    BIG_BALL_HP: 5,                // 大球撞击血量
+    BIG_BALL_MAX_RADIUS: 32.5,     // 大球最大半径
+    BIG_BALL_RADIUS_BASE: 5.2,     // 大球半径基数
+    BIG_BALL_RADIUS_FACTOR: 3.9,   // 大球半径对数因子
+    BIG_BALL_TEXT_MIN_RADIUS: 10,  // 大球显示数值的最小半径
+    BIG_BALL_TRAIL_FADE: 0.5,      // 大球尾部拖尾透明度衰减
+    BIG_BALL_TRAIL_SAMPLES: 18,    // 动态尾流轨迹点数量
+    BIG_BALL_TRAIL_LIFETIME: 1.2,  // 动态尾流轨迹点存活时长（秒）
+    BIG_BALL_AMMO_BURST_SPEED: 8.0, // 基地覆灭时弹药爆发速度
+    BIG_BALL_INTERVAL_MS: 3000,    // 大球库存逐发发射间隔
+
+    // ========== 护盾 ==========
+    SHIELD_RADIUS_MIN: 23,         // 护盾最小半径
+    SHIELD_RADIUS_MAX: 78,         // 护盾最大半径
+    SHIELD_RADIUS_BASE: 20,        // 护盾半径基数
+    SHIELD_RADIUS_FACTOR: 6.5,     // 护盾半径对数因子
+
+    // ========== 碰撞与耗损 ==========
+    WALL_RESTITUTION: 0.95,        // 战场边界反弹系数
+    SHIELD_OVERWHELM_RATIO: 5,     // 大球/护盾体积悬殊倍数，≥此值直接结算不复磨
+    MAX_PHYSICS_STEP: 3.0,         // 亚步进单步最大位移
+    LAND_DEPLETE_FACTOR: 0.8,      // 大球领地耗尽扣 hp 后的残值比例
+    COLLIDE_DEPLETE_FACTOR: 0.5,   // 大球碰撞残血比例
+    COLLISION_IMPULSE_DAMPING: 0.5, // 碰撞冲量阻尼系数
+    TRAIL_LENGTH_FACTOR: 0.5,      // 子弹拖尾线段长度系数
+    BASE_HIT_RADIUS: 19.5,         // 基地本体命中半径
+    BASE_DRAW_RADIUS: 15,          // 基地绘制半径
+    // ========== 粒子寿命与上限（防 O(n²) 性能爆表） ==========
+    BULLET_LIFETIME_MS: 6000,      // 普通子弹寿命：超时自动消散
+    SHOTGUN_LIFETIME_MS: 6000,     // 散弹粒子寿命：超时自动消散
+    MAX_BATTLE_PARTICLES: 1600,    // 战场粒子总量硬上限（超过则暂停发射）
+    SHOTGUN_MAX_STOCK: 4000,       // 散弹库存阈值：超过后发射频率减半（自动节流）
+
+    // ========== 特效 ==========
+    EFFECT_EXPLOSION_DURATION: 0.8,    // 爆炸特效持续时长（秒）
+    EFFECT_EXPLOSION_SPARKS: 14,       // 爆炸迸射粒子数量
+    EFFECT_HIT_DURATION: 0.4,          // 命中火花持续时长（秒）
+    EFFECT_BASE_DESTROY_DURATION: 1.1, // 基地毁灭演出持续时长（秒）
+    BASE_DESTROY_SPARKS: 26,           // 基地毁灭迸射火花数量
+    BASE_DESTROY_DEBRIS: 12,           // 基地毁灭残骸碎片数量
+
+    // ========== 散弹 ==========
+    SHOTGUN_SPEED_MIN: 4.0,        // 散弹最小飞行速度
+    SHOTGUN_SPEED_MAX: 6.5,        // 散弹最大飞行速度
+    SHOTGUN_BATCH_SIZE: 360,       // 每轮散弹粒子数量
+    SHOTGUN_INTERVAL_MS: 2000,     // 散弹轮次发射间隔
+    SHOTGUN_MAX_WAVES: 5,          // 大价值散弹最多拆分的发射波数
+    SHOTGUN_MIN_WEIGHT: 10,        // 散弹粒子最小权重（重量下限）
+    SHOTGUN_ANGLE_JITTER: 0.1,     // 散弹散射角随机抖动
+
+    // ========== 基地初始 ==========
+    BASE_INIT_SHIELD: 1000000,     // 基地初始护盾 (1M)
+    BASE_INIT_AMMO: 0,       // 基地初始弹药
+    BASE_CORNER: 130               // 基地距角落距离
+};
+
+// ==================== 科幻音效引擎 (WebAudio 合成,无音频文件依赖) ====================
+let audioEnabled = false;      // 用户点击后解锁（浏览器要求用户手势）
+let audioCtx = null;
+const sfxActive = {};          // 当前播放中的音效 → 防止同帧重复触发
+let sfxGain = null;            // 全局音量（含复用音效的增益节点，用于快速重触发）
+
+function initAudio() {
+    if (audioCtx) return;
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        sfxGain = audioCtx.createGain();
+        sfxGain.gain.value = 0.5;
+        sfxGain.connect(audioCtx.destination);
+        audioEnabled = true;
+    } catch (e) { audioEnabled = false; }
+}
+
+// 基础合成原语：起始频率→目标频率扫频，包络控制时长
+function sfxOsc(type, f0, f1, dur, vol = 0.5, delay = 0) {
+    if (!audioEnabled || !audioCtx) return;
+    const t0 = audioCtx.currentTime + delay;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(f0, t0);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t0 + dur);
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(g); g.connect(sfxGain);
+    osc.start(t0); osc.stop(t0 + dur + 0.02);
+}
+
+// 噪声底垫（冲击/爆炸用）：白噪声 + 低通滤波
+function sfxNoise(dur, cutoff, vol = 0.5, delay = 0) {
+    if (!audioEnabled || !audioCtx) return;
+    const t0 = audioCtx.currentTime + delay;
+    const len = Math.max(1, Math.floor(audioCtx.sampleRate * dur));
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(cutoff, t0);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(30, cutoff * 0.2), t0 + dur);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(filter); filter.connect(g); g.connect(sfxGain);
+    src.start(t0); src.stop(t0 + dur + 0.02);
+}
+
+// 轻量缓冲震荡缓冲：为弹珠反弹制造快速闪音（复用同一 buffered noise）
+let sfxBufferSource = null;
+function sfxPing(freq, dur, vol = 0.25) {
+    if (!audioEnabled || !audioCtx) return;
+    const t0 = audioCtx.currentTime;
+    const len = Math.max(1, Math.floor(audioCtx.sampleRate * dur));
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    const freqInc = (freq * Math.PI * 2) / audioCtx.sampleRate;
+    for (let i = 0; i < len; i++) data[i] = Math.sin(freqInc * i) * Math.pow(1 - i / len, 2.2);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(vol, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(g); g.connect(sfxGain);
+    src.start(t0);
+}
+
+// 命中冷却窗口：每次命中声音最短间隔，防狂叠
+function sfxAllowed(key) {
+    const now = performance.now();
+    if (sfxActive[key] && now - sfxActive[key] < 45) return false;
+    sfxActive[key] = now;
+    return true;
+}
+
+// ==================== 单位格式化与配置 ====================
+const UNITS = ['', 'K', 'M', 'B', 'T'];
+function formatVal(val) {
+    if (val < 1000) return Math.floor(val).toString();
+    let unitIndex = 0, tempVal = val;
+    while (tempVal >= 1000 && unitIndex < UNITS.length - 1) { tempVal /= 1000; unitIndex++; }
+    return tempVal.toFixed(1) + UNITS[unitIndex];
+}
+
+function getShieldRadius(shieldVal) {
+    if (shieldVal <= 0) return 0;
+    return Math.min(CONFIG.SHIELD_RADIUS_MAX, Math.max(CONFIG.SHIELD_RADIUS_MIN, CONFIG.SHIELD_RADIUS_BASE + Math.log10(shieldVal) * CONFIG.SHIELD_RADIUS_FACTOR));
+}
+
+// Plinko 小球半径随价值（val）增长：对数曲线，大值不爆炸
+function getBallRadius(val) {
+    return Math.min(CONFIG.BALL_MAX_RADIUS, CONFIG.BALL_RADIUS + Math.log10(Math.max(1, val)) * CONFIG.BALL_RADIUS_SCALE);
+}
+
+// 大球初始飞行速度随体积（val）反向变化：越大越慢，越小越快
+function getBigBallSpeed(val) {
+    const volumeFactor = Math.log10(Math.max(1, val));
+    return Math.max(CONFIG.BIG_BALL_SPEED, CONFIG.BIG_BALL_SPEED_MAX - volumeFactor * CONFIG.BIG_BALL_VOLUME_SCALE);
+}
+
+// 大球速率恒定：方向改变后重新缩放回 p.speed，只保留方向变化
+function renormalizeBigBall(p) {
+    if (!p.isBig || !p.speed) return;
+    const curSpeed = Math.hypot(p.vx, p.vy);
+    if (curSpeed <= 0) return;
+    const scale = p.speed / curSpeed;
+    p.vx *= scale;
+    p.vy *= scale;
+}
+
+// 颜色 RGB 配置（用于像素直接写入）—— 科幻霓虹：统一提亮降饱和，荧光感
+const COLORS_RGB = {
+    blue:   { r: 56,  g: 189, b: 248, hex: '#38bdf8' },
+    green:  { r: 52,  g: 211, b: 153, hex: '#34d399' },
+    yellow: { r: 250, g: 204, b: 21,  hex: '#facc15' },
+    red:    { r: 248, g: 113, b: 113, hex: '#f87171' }
+};
+// 霓虹色的深色变体（用于渐变/辉光内深边）
+const COLORS_DARK = {
+    blue:   '#0c4a6e',
+    green:  '#065f46',
+    yellow: '#713f12',
+    red:    '#7f1d1d'
+};
+const COLOR_KEYS = ['blue', 'green', 'yellow', 'red'];
+
+const CELL_SIZE = CONFIG.CELL_SIZE;
+const GRID_SIZE = Math.floor(CONFIG.BATTLE_SIZE / CELL_SIZE); // 303 x 303
+const LAND_COST = CONFIG.LAND_COST;
+
+const CORNER = CONFIG.BASE_CORNER;
+const BASES = {
+    blue:   { x: CORNER, y: CORNER, shield: CONFIG.BASE_INIT_SHIELD, ammo: CONFIG.BASE_INIT_AMMO, angle: 0, color: COLORS_RGB.blue.hex, destroyed: false, shotgunPending: 0, shotgunWeight: CONFIG.SHOTGUN_MIN_WEIGHT, bigBallQueue: [], lastMissileTime: 0 },
+    green:  { x: CONFIG.BATTLE_SIZE - CORNER, y: CORNER, shield: CONFIG.BASE_INIT_SHIELD, ammo: CONFIG.BASE_INIT_AMMO, angle: Math.PI / 2, color: COLORS_RGB.green.hex, destroyed: false, shotgunPending: 0, shotgunWeight: CONFIG.SHOTGUN_MIN_WEIGHT, bigBallQueue: [], lastMissileTime: 0 },
+    yellow: { x: CORNER, y: CONFIG.BATTLE_SIZE - CORNER, shield: CONFIG.BASE_INIT_SHIELD, ammo: CONFIG.BASE_INIT_AMMO, angle: -Math.PI / 2, color: COLORS_RGB.yellow.hex, destroyed: false, shotgunPending: 0, shotgunWeight: CONFIG.SHOTGUN_MIN_WEIGHT, bigBallQueue: [], lastMissileTime: 0 },
+    red:    { x: CONFIG.BATTLE_SIZE - CORNER, y: CONFIG.BATTLE_SIZE - CORNER, shield: CONFIG.BASE_INIT_SHIELD, ammo: CONFIG.BASE_INIT_AMMO, angle: Math.PI, color: COLORS_RGB.red.hex, destroyed: false, shotgunPending: 0, shotgunWeight: CONFIG.SHOTGUN_MIN_WEIGHT, bigBallQueue: [], lastMissileTime: 0 }
+};
+
+const pCanvas = document.getElementById('plinkoCanvas');
+const pCtx = pCanvas.getContext('2d');
+pCanvas.width = CONFIG.PLINKO_WIDTH;
+pCanvas.height = CONFIG.PLINKO_HEIGHT;
+const bCanvas = document.getElementById('battleCanvas');
+const bCtx = bCanvas.getContext('2d');
+bCanvas.width = CONFIG.BATTLE_SIZE;
+bCanvas.height = CONFIG.BATTLE_SIZE;
+
+// 隐藏的 303x303 领地离屏 Canvas 和 ImageData
+const offCanvas = document.createElement('canvas');
+offCanvas.width = GRID_SIZE;
+offCanvas.height = GRID_SIZE;
+const offCtx = offCanvas.getContext('2d');
+const imgData = offCtx.createImageData(GRID_SIZE, GRID_SIZE);
+
+let territoryGrid = Array(GRID_SIZE).fill(null).map(() => Array(GRID_SIZE).fill(null));
+
+function setPixelOwner(x, y, ownerKey) {
+    const idx = (y * GRID_SIZE + x) * 4;
+    const color = COLORS_RGB[ownerKey];
+    imgData.data[idx]     = color.r;
+    imgData.data[idx + 1] = color.g;
+    imgData.data[idx + 2] = color.b;
+    imgData.data[idx + 3] = CONFIG.TERRITORY_ALPHA;
+}
+
+// 初始化领地数据与 ImageData 像素缓存
+const halfGrid = GRID_SIZE / 2;
+for(let r = 0; r < GRID_SIZE; r++) {
+    for(let c = 0; c < GRID_SIZE; c++) {
+        let owner = 'red';
+        if (r < halfGrid && c < halfGrid) owner = 'blue';
+        else if (r < halfGrid && c >= halfGrid) owner = 'green';
+        else if (r >= halfGrid && c < halfGrid) owner = 'yellow';
+        else owner = 'red';
+        
+        territoryGrid[r][c] = owner;
+        setPixelOwner(c, r, owner);
+    }
+}
+offCtx.putImageData(imgData, 0, 0);
+
+// 领地暗角 + 霓虹描边：一次性预渲染到离屏画布，每帧 drawImage 零成本
+const vignetteCanvas = document.createElement('canvas');
+vignetteCanvas.width = CONFIG.BATTLE_SIZE;
+vignetteCanvas.height = CONFIG.BATTLE_SIZE;
+{
+    const vCtx = vignetteCanvas.getContext('2d');
+    // 暗角：四角径向压暗，中心透明
+    const vg = vCtx.createRadialGradient(CONFIG.BATTLE_SIZE / 2, CONFIG.BATTLE_SIZE / 2, CONFIG.BATTLE_SIZE * 0.30,
+        CONFIG.BATTLE_SIZE / 2, CONFIG.BATTLE_SIZE / 2, CONFIG.BATTLE_SIZE * 0.72);
+    vg.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    vg.addColorStop(1, 'rgba(2, 6, 16, 0.85)');
+    vCtx.fillStyle = vg;
+    vCtx.fillRect(0, 0, CONFIG.BATTLE_SIZE, CONFIG.BATTLE_SIZE);
+    // 霓虹内描边：微弱青色光带，让领地边界有科技感
+    const borderW = 3;
+    vCtx.strokeStyle = 'rgba(56, 189, 248, 0.14)';
+    vCtx.lineWidth = borderW;
+    vCtx.strokeRect(borderW / 2, borderW / 2, CONFIG.BATTLE_SIZE - borderW, CONFIG.BATTLE_SIZE - borderW);
+}
+
+// ==================== 精灵贴图缓存（一次性预渲染，替代每帧 shadowBlur/渐变） ====================
+// hot-path 上的发光/渐变一律预渲染成贴图后 drawImage，彻底去掉每帧阴影模糊
+const spriteCache = { glow: {}, peg: null, base: {} };
+const GLOW_DIAMETERS = [16, 22, 28, 34, 44, 58, 74];   // Plinko 球 / 子弹 / 大球 共用档位
+
+// 构建发光圆球贴图：外层光晕（径向扩散） + 球体（白高光 → 阵营色 → 深色边）
+function makeGlowSprite(colorKey, diameter) {
+    const S = diameter + 14;   // 光晕外扩
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const g = c.getContext('2d');
+    const col = COLORS_RGB[colorKey];
+    const cx = S / 2, cy = S / 2, r = diameter / 2;
+    // 光晕层（廉价径向扩散，一次性构建）
+    const glow = g.createRadialGradient(cx, cy, r * 0.4, cx, cy, S / 2);
+    glow.addColorStop(0, col.hex + '66');
+    glow.addColorStop(1, col.hex + '00');
+    g.fillStyle = glow;
+    g.beginPath(); g.arc(cx, cy, S / 2, 0, Math.PI * 2); g.fill();
+    // 球体本体
+    const ball = g.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.1, cx, cy, r);
+    ball.addColorStop(0, '#ffffff');
+    ball.addColorStop(0.45, col.hex);
+    ball.addColorStop(1, COLORS_DARK[colorKey]);
+    g.fillStyle = ball;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+    return c;
+}
+
+// 金属钉贴图：深灰 → 高光 → 边，构图一次即可
+function makePegSprite() {
+    const r = CONFIG.PEG_RADIUS + 3;
+    const S = r * 2;
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const g = c.getContext('2d');
+    const gg = g.createRadialGradient(S / 2 - 2, S / 2 - 2, 1, S / 2, S / 2, r);
+    gg.addColorStop(0, '#e2e8f0');
+    gg.addColorStop(0.5, '#94a3b8');
+    gg.addColorStop(1, '#475569');
+    g.fillStyle = gg;
+    g.beginPath(); g.arc(S / 2, S / 2, r, 0, Math.PI * 2); g.fill();
+    return c;
+}
+
+// 基地本体贴图：阵营色光晕 + 白心→阵营色→深色圆台
+function makeBaseSpriteFor(colorKey) {
+    const d = CONFIG.BASE_DRAW_RADIUS * 2;
+    const S = d + 14;
+    const c = document.createElement('canvas');
+    c.width = S; c.height = S;
+    const g = c.getContext('2d');
+    const glow = g.createRadialGradient(S / 2, S / 2, d * 0.3, S / 2, S / 2, S / 2);
+    glow.addColorStop(0, COLORS_RGB[colorKey].hex + '66');
+    glow.addColorStop(1, COLORS_RGB[colorKey].hex + '00');
+    g.fillStyle = glow;
+    g.beginPath(); g.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2); g.fill();
+    const ball = g.createRadialGradient(S / 2 - 4, S / 2 - 4, 2, S / 2, S / 2, d / 2);
+    ball.addColorStop(0, '#fff');
+    ball.addColorStop(0.4, COLORS_RGB[colorKey].hex);
+    ball.addColorStop(1, COLORS_DARK[colorKey]);
+    g.fillStyle = ball;
+    g.beginPath(); g.arc(S / 2, S / 2, d / 2, 0, Math.PI * 2); g.fill();
+    return c;
+}
+
+// 一次性构建全部贴图（首次渲染前调用）
+let spritesReady = false;
+function ensureSprites() {
+    if (spritesReady) return;
+    spritesReady = true;
+    COLOR_KEYS.forEach(key => {
+        spriteCache.glow[key] = {};
+        GLOW_DIAMETERS.forEach(d => { spriteCache.glow[key][d] = makeGlowSprite(key, d); });
+        spriteCache.base[key] = makeBaseSpriteFor(key);
+    });
+    spriteCache.peg = makePegSprite();
+    // Plinko 背景渐变贴图（全高一次性构建）
+    spriteCache.bg = document.createElement('canvas');
+    spriteCache.bg.width = CONFIG.PLINKO_WIDTH;
+    spriteCache.bg.height = CONFIG.PLINKO_HEIGHT;
+    const bg = spriteCache.bg.getContext('2d');
+    const bgGrad = bg.createLinearGradient(0, 0, 0, CONFIG.PLINKO_HEIGHT);
+    bgGrad.addColorStop(0, '#111a30');
+    bgGrad.addColorStop(0.6, '#0a0f1c');
+    bgGrad.addColorStop(1, '#0a0f1c');
+    bg.fillStyle = bgGrad;
+    bg.fillRect(0, 0, CONFIG.PLINKO_WIDTH, CONFIG.PLINKO_HEIGHT);
+    // 槽墙金属渐变贴图（宽 12 高全段，平铺 drawImage）
+    spriteCache.wall = document.createElement('canvas');
+    spriteCache.wall.width = CONFIG.SLOT_WALL_WIDTH;
+    spriteCache.wall.height = CONFIG.SLOT_BOTTOM - CONFIG.SLOT_TOP;
+    const wg = spriteCache.wall.getContext('2d');
+    const wallGrad = wg.createLinearGradient(0, 0, 0, spriteCache.wall.height);
+    wallGrad.addColorStop(0, '#3b4758');
+    wallGrad.addColorStop(0.5, '#1f2937');
+    wallGrad.addColorStop(1, '#111827');
+    wg.fillStyle = wallGrad;
+    wg.fillRect(0, 0, spriteCache.wall.width, spriteCache.wall.height);
+}
+
+// 按实际半径取最近档位贴图（避免每帧重建任意尺寸）
+function getGlowSprite(colorKey, radius) {
+    const d = radius * 2;
+    let best = GLOW_DIAMETERS[0], bestDiff = Infinity;
+    for (const dim of GLOW_DIAMETERS) {
+        const diff = Math.abs(dim - d);
+        if (diff < bestDiff) { bestDiff = diff; best = dim; }
+    }
+    return spriteCache.glow[colorKey][best];
+}
+
+// ==================== PLINKO 逻辑 ====================
+let balls = [], pegs = [], multiplierSlots = [], actionSlots = [];
+let lastFrameTime = performance.now();
+let timeScale = 1;   // 帧率解耦系数：60fps 为基准，高刷屏自动缩放
+
+function initPlinko() {
+    pegs = [];
+    for (let r = 0; r < CONFIG.PEG_TOP_ROWS; r++) {
+        // 上半区第 2、4 排（r=1、3）整排去掉钉子
+        if (r === 1 || r === 3) continue;
+        // 第一排（r=0）与第二排（r=2）都去掉中间那颗钉子（正中央留缺口）
+        const nCols = CONFIG.PEG_COLS;
+        const rowOffset = 0;
+        for (let c = 0; c < nCols; c++) {
+            // 去掉中间位置的钉子（7 列中间 c=3）
+            if ((r === 0 || r === 2) && c === Math.floor(CONFIG.PEG_COLS / 2)) continue;
+            pegs.push({ x: CONFIG.PEG_START_X + c * CONFIG.PEG_STEP_X + (r % 2 === 0 ? 0 : CONFIG.PEG_OFFSET_X) + rowOffset, y: CONFIG.PEG_TOP_Y + r * CONFIG.PEG_ROW_GAP, r: CONFIG.PEG_RADIUS });
+        }
+    }
+
+    const slotLayout = CONFIG.SLOT_LAYOUT;
+    multiplierSlots = [];
+    let currentX = 0;
+    slotLayout.forEach(item => {
+        // 在此处初始化 count 计数器为 0
+        multiplierSlots.push({ x: currentX, w: item.w, mult: item.mult, isOpen: item.isOpen, text: item.text, count: 0 });
+        currentX += item.w;
+    });
+
+    for (let r = 0; r < CONFIG.PEG_BOTTOM_ROWS; r++) {
+        for (let c = 0; c < CONFIG.PEG_COLS; c++) {
+            // 下半区第 2、4 排（r=1、3）去掉最右侧钉子
+            if (c === CONFIG.PEG_COLS - 1 && (r === 1 || r === 3)) continue;
+            pegs.push({ x: CONFIG.PEG_START_X + c * CONFIG.PEG_STEP_X + (r % 2 === 0 ? 0 : CONFIG.PEG_OFFSET_X), y: CONFIG.PEG_BOTTOM_Y + r * CONFIG.PEG_ROW_GAP, r: CONFIG.PEG_RADIUS });
+        }
+    }
+
+    const actions = CONFIG.MECHANISM_ACTIONS;
+    const actionWidth = pCanvas.width / actions.length;
+    actionSlots = actions.map((act, i) => ({ name: act, x: i * actionWidth, w: actionWidth }));
+}
+
+function spawnWave() {
+    COLOR_KEYS.forEach((colorKey, index) => {
+        if (!BASES[colorKey].destroyed) {
+            setTimeout(() => {
+                balls.push({
+                    x: CONFIG.BALL_SPAWN_X + (Math.random() - 0.5) * CONFIG.BALL_SPAWN_SPREAD_X, y: CONFIG.BALL_SPAWN_Y,
+                    vx: (Math.random() - 0.5) * CONFIG.BALL_SPAWN_VX_RANGE, vy: CONFIG.BALL_SPAWN_VY_BASE + Math.random() * CONFIG.BALL_SPAWN_VY_RANDOM,
+                    r: getBallRadius(CONFIG.BALL_START_VAL), colorKey: colorKey, val: CONFIG.BALL_START_VAL, exitCounted: false
+                });
+            }, index * CONFIG.WAVE_STAGGER_MS);
+        }
+    });
+    // 出球间隔随存活炮台数动态缩短：4 台=全间隔，1 台=最短间隔
+    const alive = COLOR_KEYS.filter(k => !BASES[k].destroyed).length;
+    const interval = CONFIG.WAVE_INTERVAL_MIN_MS + (CONFIG.WAVE_INTERVAL_MS - CONFIG.WAVE_INTERVAL_MIN_MS) * (alive - 1) / (COLOR_KEYS.length - 1);
+    setTimeout(spawnWave, interval);
+}
+
+function updatePlinko() {
+    const slotTop = CONFIG.SLOT_TOP, slotBottom = CONFIG.SLOT_BOTTOM, actionTop = CONFIG.ACTION_TOP, actionBottom = CONFIG.ACTION_BOTTOM;
+
+    // 帧率解耦：按两帧真实时间差缩放本帧物理增量（60fps 为基准 timeScale≈1）
+    const now = performance.now();
+    timeScale = Math.min(2, (now - lastFrameTime) / (1000 / 60));
+    lastFrameTime = now;
+
+    for (let i = balls.length - 1; i >= 0; i--) {
+        let b = balls[i];
+        if (BASES[b.colorKey].destroyed) { balls.splice(i, 1); continue; }
+
+        // 物理亚步进：把小球的位移拆成小步，避免高速时穿透钉子/槽壁
+        b.vy += CONFIG.BALL_GRAVITY * timeScale;
+
+        // 出口通道上升气流阻力：小球（小半径）被吹起，足够大的球才能压穿
+        if (b.y >= slotTop - 30 && b.y <= slotBottom + 40) {
+            for (const slot of multiplierSlots) {
+                if (slot.isOpen && b.x >= slot.x - b.r && b.x <= slot.x + slot.w + b.r) {
+                    // 强度与粒子数 val 成反比：粒子少的球被吹起，粒子多的球压穿
+                    // force = 基准强度 / (1 + log10(val) * 衰减系数)，粒子越多阻力越小
+                    const force = CONFIG.EXIT_UPDRAFT / (1 + Math.log10(Math.max(1, b.val)) * CONFIG.EXIT_UPDRAFT_LOG);
+                    b.vy -= force;
+                    break;
+                }
+            }
+        }
+
+        // 出口正下方的附加上升气流层：更靠下的一段升力带，把漏出去的球再吹回出口
+        if (b.y >= slotBottom + 40 && b.y <= slotBottom + 140) {
+            for (const slot of multiplierSlots) {
+                if (slot.isOpen && b.x >= slot.x - b.r && b.x <= slot.x + slot.w + b.r) {
+                    const force = CONFIG.EXIT_UPDRAFT_BELOW / (1 + Math.log10(Math.max(1, b.val)) * CONFIG.EXIT_UPDRAFT_LOG);
+                    b.vy -= force;
+                    break;
+                }
+            }
+        }
+
+        // 速度上限：防止持续下落导致速度失控、一帧跳太多像素
+        let speed = Math.hypot(b.vx, b.vy);
+        if (speed > CONFIG.BALL_MAX_SPEED) {
+            b.vx *= CONFIG.BALL_MAX_SPEED / speed;
+            b.vy *= CONFIG.BALL_MAX_SPEED / speed;
+        }
+
+        const steps = Math.max(1, Math.ceil(speed / CONFIG.MAX_PHYSICS_STEP));
+        const subVx = b.vx * timeScale / steps, subVy = b.vy * timeScale / steps;
+
+        for (let s = 0; s < steps; s++) {
+            b.x += subVx; b.y += subVy;
+
+            if (b.x - b.r < 0) { b.x = b.r; b.vx = Math.abs(b.vx) * CONFIG.BALL_WALL_RESTITUTION; }
+            else if (b.x + b.r > pCanvas.width) { b.x = pCanvas.width - b.r; b.vx = -Math.abs(b.vx) * CONFIG.BALL_WALL_RESTITUTION; }
+
+            pegs.forEach(p => {
+                let dx = b.x - p.x, dy = b.y - p.y, dist = Math.hypot(dx, dy);
+                if (dist < b.r + p.r && dist > 0) {
+                    let angle = Math.atan2(dy, dx), overlap = (b.r + p.r) - dist;
+                    // 推出重叠
+                    b.x += Math.cos(angle) * overlap; b.y += Math.sin(angle) * overlap;
+                    // 沿法线反射，保留动能（乘恢复系数），只加少量随机抖动
+                    let vDotN = b.vx * Math.cos(angle) + b.vy * Math.sin(angle);
+                    if (vDotN < 0) {
+                        b.vx = (b.vx - (1 + CONFIG.PEG_RESTITUTION) * vDotN * Math.cos(angle)) + (Math.random() - 0.5) * CONFIG.PEG_JITTER;
+                        b.vy = (b.vy - (1 + CONFIG.PEG_RESTITUTION) * vDotN * Math.sin(angle));
+                        // 弹珠碰钉：音高随碰撞速度变化
+                        sfxQueue.push({ t: 'peg', speed: Math.min(CONFIG.BALL_MAX_SPEED, Math.hypot(b.vx, b.vy)) });
+                    }
+                }
+            });
+
+            // 小球间弹性碰撞：质量与携带粒子数(val)挂钩，越大的球越不容易被弹开
+            for (let j = 0; j < balls.length; j++) {
+                const b2 = balls[j];
+                if (b2 === b) continue;
+                const dx2 = b2.x - b.x, dy2 = b2.y - b.y;
+                const dist2 = Math.hypot(dx2, dy2);
+                const minDist2 = b.r + b2.r;
+                if (dist2 < minDist2 && dist2 > 0) {
+                    const nx = dx2 / dist2, ny = dy2 / dist2;
+                    const overlap2 = minDist2 - dist2;
+                    // 按质量比例推开重叠：质量大的位移小
+                    const m1 = Math.max(1, b.val);
+                    const m2 = Math.max(1, b2.val);
+                    const totalM = m1 + m2;
+                    b.x -= nx * overlap2 * (m2 / totalM); b.y -= ny * overlap2 * (m2 / totalM);
+                    b2.x += nx * overlap2 * (m1 / totalM); b2.y += ny * overlap2 * (m1 / totalM);
+                    // 法向一维动量碰撞（带恢复系数，e<1 时碰撞更柔和）
+                    const e = CONFIG.BALL_COLLISION_RESTITUTION;
+                    const vn1 = b.vx * nx + b.vy * ny;
+                    const vn2 = b2.vx * nx + b2.vy * ny;
+                    const vn1New = ((m1 - e * m2) * vn1 + (1 + e) * m2 * vn2) / totalM;
+                    const vn2New = ((1 + e) * m1 * vn1 + (m2 - e * m1) * vn2) / totalM;
+                    b.vx += (vn1New - vn1) * nx;
+                    b.vy += (vn1New - vn1) * ny;
+                    b2.vx += (vn2New - vn2) * nx;
+                    b2.vy += (vn2New - vn2) * ny;
+                }
+            }
+        }
+
+        if (b.y >= slotTop && b.y <= slotBottom) {
+            multiplierSlots.forEach((slot, index) => {
+                if (slot.isOpen && b.x >= slot.x && b.x <= slot.x + slot.w) {
+                    if (!b.exitCounted && (b.y + b.r >= slotBottom)) {
+                        // 出口槽统计：小球从出口离开的次数
+                        slot.count++;
+                        b.exitCounted = true;
+                    }
+                }
+                if (!slot.isOpen && b.x >= slot.x && b.x <= slot.x + slot.w) {
+                    if (b.y + b.r >= slotBottom) {
+                        // 增加计数：小球落入此槽位并被翻倍重置时 count + 1
+                        slot.count++;
+
+                        b.val *= slot.mult; b.y = CONFIG.BALL_RESET_Y;
+                        b.x = CONFIG.BALL_SPAWN_X + (Math.random() - 0.5) * CONFIG.BALL_SPAWN_SPREAD_X;
+                        b.vy = CONFIG.BALL_SPAWN_VY_BASE; b.vx = (Math.random() - 0.5) * CONFIG.BALL_SPAWN_VX_RANGE;
+                        b.r = getBallRadius(b.val); // 随价值变大
+                        b.exitCounted = false; // 重置后可以再次经过出口计数
+                    }
+                }
+                // 宽墙边界：球在墙的外缘就被弹回（墙中心仍在 slot.x）
+                const wallEdge = slot.x + CONFIG.SLOT_WALL_WIDTH / 2;
+                if (index > 0 && Math.abs(b.x - wallEdge) < b.r) {
+                    if (b.x < wallEdge) { b.x = wallEdge - b.r; b.vx = -Math.abs(b.vx) * CONFIG.SLOT_WALL_RESTITUTION; }
+                    else { b.x = wallEdge + b.r; b.vx = Math.abs(b.vx) * CONFIG.SLOT_WALL_RESTITUTION; }
+                }
+            });
+        }
+
+        if (b.y >= actionTop) {
+            actionSlots.forEach((slot, index) => {
+                const wallEdge = slot.x + CONFIG.SLOT_WALL_WIDTH / 2;
+                if (index > 0 && Math.abs(b.x - wallEdge) < b.r) {
+                    if (b.x < wallEdge) { b.x = wallEdge - b.r; b.vx = -Math.abs(b.vx) * CONFIG.SLOT_WALL_RESTITUTION; }
+                    else { b.x = wallEdge + b.r; b.vx = Math.abs(b.vx) * CONFIG.SLOT_WALL_RESTITUTION; }
+                }
+                if (b.y + b.r >= actionBottom && b.x >= slot.x && b.x <= slot.x + slot.w) {
+                    triggerMechanism(b.colorKey, slot.name, b.val);
+                    balls.splice(i, 1);
+                }
+            });
+        }
+    }
+}
+
+// ==================== 战场逻辑与像素更新 ====================
+let particles = [];
+let missiles = [];   // 防空追踪导弹：锁定目标大球，追踪拦截
+let effects = [];    // 视觉特效：爆炸、火花、涟漪等
+let gridDirty = true;
+let gameWinner = null;   // 胜利方 colorKey，场上只剩 1 个炮台时设置
+
+// 屏幕震动：{magnitude, until}，每帧衰减至 0
+let shake = { magnitude: 0, until: 0 };
+function addShake(intensity, duration) {
+    const now = performance.now();
+    if (now > shake.until) shake.magnitude = 0;   // 上一轮已结束，直接覆盖
+    shake.magnitude = Math.max(shake.magnitude, intensity);
+    shake.until = Math.max(shake.until, now + duration);
+}
+
+// 音效事件队列：视觉/物理代码只入队，渲染循环统一出队发声
+let sfxQueue = [];
+
+// ==================== 科幻音效事件 ====================
+// 弹珠碰钉：高频闪音，音高随碰撞能量（球速）变化
+function sfxPegHit(speed) {
+    if (!audioEnabled) return;
+    const freq = 900 + Math.min(1, speed / 8) * 700;
+    sfxPing(freq, 0.06, 0.12);
+}
+// 普通子弹命中 / 火花：短促的电子爆裂
+function sfxBulletHit() {
+    if (!sfxAllowed('bullet')) return;
+    sfxOsc('square', 320, 100, 0.07, 0.3);
+    sfxNoise(0.05, 1800, 0.25);
+}
+// 防空导弹发射：推进喷射声
+function sfxMissileLaunch() {
+    if (!sfxAllowed('missile')) return;
+    sfxOsc('sawtooth', 180, 480, 0.22, 0.22);
+    sfxNoise(0.15, 1200, 0.16);
+}
+// 大球落地/领地吞噬/反弹：低频鼓点
+function sfxBigImpact() {
+    if (!sfxAllowed('big')) return;
+    sfxNoise(0.12, 420, 0.3);
+    sfxOsc('sine', 90, 40, 0.18, 0.4);
+}
+// 爆炸（普通）：噪声 + 低频，规模越大越深沉
+function sfxExplosion(big = false) {
+    if (!sfxAllowed('explosion')) return;
+    if (big) {
+        sfxNoise(0.5, 1600, 0.7);
+        sfxOsc('sine', 70, 28, 0.6, 0.7);
+    } else {
+        sfxNoise(0.3, 1100, 0.45);
+        sfxOsc('sine', 110, 40, 0.35, 0.4);
+    }
+}
+// 基地毁灭：重型爆炸 + 冲击波低频 + 低频长尾（专属）
+function sfxBaseDestroyed() {
+    if (!sfxAllowed('base')) return;
+    sfxNoise(0.9, 2400, 0.9);
+    sfxOsc('sine', 60, 20, 1.1, 0.9);
+    sfxOsc('sine', 48, 16, 1.3, 0.55, 0.1);
+    sfxNoise(0.6, 600, 0.5, 0.25);
+}
+// 护盾被击破：高频破片音
+function sfxShieldBreak() {
+    if (!sfxAllowed('shield')) return;
+    sfxOsc('triangle', 1200, 200, 0.25, 0.35);
+    sfxNoise(0.18, 3000, 0.2);
+}
+// 胜负落定：小段旋律（上行三音）
+function sfxVictory() {
+    if (!sfxAllowed('victory')) return;
+    sfxOsc('triangle', 330, 330, 0.14, 0.5);
+    sfxOsc('triangle', 440, 440, 0.14, 0.5, 0.14);
+    sfxOsc('triangle', 660, 660, 0.3, 0.5, 0.28);
+}
+// 领地被吞噬时：微弱湿噪声点缀（低频气浪），防止领地转换过于安静
+function sfxTerritoryEat() {
+    if (!sfxAllowed('terr')) return;
+    sfxNoise(0.06, 900, 0.1);
+}
+
+// 渲染循环：出队转发给音频系统
+function flushSfxQueue() {
+    while (sfxQueue.length > 0) {
+        const e = sfxQueue.shift();
+        switch (e.t) {
+            case 'peg': sfxPegHit(e.speed); break;
+            case 'bulletHit': sfxBulletHit(); break;
+            case 'missileLaunch': sfxMissileLaunch(); break;
+            case 'bigImpact': sfxBigImpact(); break;
+            case 'explosion': sfxExplosion(e.big); break;
+            case 'baseDestroyed': sfxBaseDestroyed(); break;
+            case 'shieldBreak': sfxShieldBreak(); break;
+            case 'victory': sfxVictory(); break;
+            case 'territoryEat': sfxTerritoryEat(); break;
+        }
+    }
+}
+
+// 生成爆炸特效：扩散圆环 + 迸射火花
+function spawnExplosion(x, y, colorKey, scale = 1) {
+    effects.push({
+        type: 'explosion',
+        x, y, colorKey,
+        born: performance.now() / 1000,
+        scale,
+        sparks: Array.from({ length: CONFIG.EFFECT_EXPLOSION_SPARKS }, () => ({
+            ang: Math.random() * Math.PI * 2,
+            speed: 2 + Math.random() * 4,
+            len: 6 + Math.random() * 10
+        }))
+    });
+    sfxQueue.push({ t: 'explosion', big: scale > 2 });   // 大爆炸（基地级）低音更沉
+}
+
+// 生成命中火花：小范围爆闪
+function spawnHitFx(x, y, colorKey) {
+    effects.push({
+        type: 'hit',
+        x, y, colorKey,
+        born: performance.now() / 1000
+    });
+    sfxQueue.push({ t: 'bulletHit' });
+}
+
+function triggerMechanism(colorKey, action, val) {
+    const base = BASES[colorKey];
+    if (!base || base.destroyed) return;
+
+    if (action === '护盾') {
+        base.shield += val;
+    }
+    else if (action === '子弹') {
+        base.ammo += val;
+    }
+    else if (action === '散弹') {
+        // 散弹按总价值入库（shotgunPending = 待发射总价值）。
+        // 触发时锁定本批权重：按最多 MAX_WAVES 波 × 每波 360 粒分摊，下限 SHOTGUN_MIN_WEIGHT，
+        // 避免大价值球堆积海量粒子。
+        base.shotgunPending += Math.floor(val / CONFIG.BULLET_VAL);
+        base.shotgunWeight = Math.max(
+            CONFIG.SHOTGUN_MIN_WEIGHT,
+            Math.ceil(base.shotgunPending / (CONFIG.SHOTGUN_BATCH_SIZE * CONFIG.SHOTGUN_MAX_WAVES))
+        );
+    }
+    else if (action === '大球') {
+        let totalEnemyShield = 0;
+        COLOR_KEYS.forEach(k => {
+            if (k !== colorKey && !BASES[k].destroyed) {
+                totalEnemyShield += BASES[k].shield;
+            }
+        });
+
+        let ballVal = val;
+
+        if (ballVal > totalEnemyShield) {
+            let overflow = ballVal - totalEnemyShield;
+            base.shield += overflow;
+            ballVal = totalEnemyShield;
+        }
+
+        if (ballVal > 0) {
+            base.bigBallQueue.push(ballVal);  // 把每个大球的面值入队，发射时逐个出队
+        }
+    }
+}
+
+// 智能防空与高密度子弹发射
+setInterval(() => {
+    COLOR_KEYS.forEach(key => {
+        let b = BASES[key];
+        if (b.destroyed) return;
+
+        // 收集范围内所有敌方大球（不论体积大小都拦截）
+        const targetBalls = [];
+        const alertRadiusSq = CONFIG.DEFENSE_ALERT_RADIUS ** 2;
+        for (let i = 0; i < particles.length; i++) {
+            let p = particles[i];
+            if (p.isBig && p.colorKey !== key) {
+                let distSq = (p.x - b.x) ** 2 + (p.y - b.y) ** 2;
+                if (distSq <= alertRadiusSq) {
+                    targetBalls.push(p);
+                }
+            }
+        }
+
+        // 炮台朝向最近的敌方大球
+        if (targetBalls.length > 0) {
+            let nearest = targetBalls[0], minDistSq = Infinity;
+            targetBalls.forEach(t => {
+                const d = (t.x - b.x) ** 2 + (t.y - b.y) ** 2;
+                if (d < minDistSq) { minDistSq = d; nearest = t; }
+            });
+            let targetAngle = Math.atan2(nearest.y - b.y, nearest.x - b.x);
+            let angleDiff = targetAngle - b.angle;
+            angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+            b.angle += angleDiff * CONFIG.TURRET_TRACKING_SPEED;
+        } else {
+            b.angle += CONFIG.TURRET_ROTATION_CRUISE;
+        }
+
+        // 防空拦截：对范围内所有敌方大球各发射一枚追踪导弹
+        if (targetBalls.length > 0) {
+            const now = performance.now();
+            // 按档位逐一结算：距离越近携带目标 val 的百分比越高
+            const bands = CONFIG.MISSILE_DISTANCE_BANDS;
+            const bandRatios = Array.from({ length: bands }, (_, i) => (bands - i) / bands); // 近→远: 1, 0.8, 0.6, 0.4, 0.2
+            let totalCost = 0;
+            const missilePlans = targetBalls.map(target => {
+                const distToTarget = Math.hypot(target.x - b.x, target.y - b.y);
+                // 归一化距离 0~1，越近越靠前档位
+                const norm = Math.min(1, distToTarget / CONFIG.DEFENSE_ALERT_RADIUS);
+                const bandIndex = Math.min(bands - 1, Math.floor(norm * bands));
+                const cost = Math.max(1, Math.floor(target.val * bandRatios[bandIndex]));
+                const targetRadius = Math.min(CONFIG.BIG_BALL_MAX_RADIUS, CONFIG.BIG_BALL_RADIUS_BASE + Math.log10(target.val) * CONFIG.BIG_BALL_RADIUS_FACTOR);
+                return { target, cost, radius: targetRadius * CONFIG.MISSILE_RADIUS_FACTOR };
+            });
+            missilePlans.forEach(plan => totalCost += plan.cost);
+
+            // 弹药足够则全部发射；不足则按全部弹药发射（比例均摊）
+            const budget = b.ammo;
+            if (now - b.lastMissileTime >= CONFIG.MISSILE_COOLDOWN_MS) {
+                b.lastMissileTime = now;
+                let costedTotal = Math.min(totalCost, budget);
+                missilePlans.forEach(plan => {
+                    if (costedTotal <= 0) return;
+                    const actualCost = totalCost > 0 ? Math.round(plan.cost / totalCost * costedTotal) : 0;
+                    if (actualCost <= 0) return;
+                    missiles.push({
+                        x: b.x, y: b.y,
+                        vx: Math.cos(b.angle) * CONFIG.MISSILE_SPEED,
+                        vy: Math.sin(b.angle) * CONFIG.MISSILE_SPEED,
+                        radius: plan.radius,
+                        colorKey: key,
+                        target: plan.target,
+                        damage: actualCost   // 命中按实际携带粒子结算
+                    });
+                });
+                b.ammo = Math.max(0, b.ammo - costedTotal);
+            }
+        } else if (b.ammo > 0 && particles.length < CONFIG.MAX_BATTLE_PARTICLES) {
+            // 巡航射击：普通子弹，2 发/次，频率不变（超过粒子上限则暂停发射防止卡死）
+            const shotsCount = CONFIG.BULLET_BASE_SHOTS;
+            for (let s = 0; s < shotsCount; s++) {
+                if (b.ammo <= 0) break;
+                if (particles.length >= CONFIG.MAX_BATTLE_PARTICLES) break;
+                b.ammo = Math.max(0, b.ammo - CONFIG.BULLET_VAL);
+                let offsetAngle = (s - (shotsCount - 1) / 2) * CONFIG.BULLET_SPREAD_ANGLE + (Math.random() - 0.5) * CONFIG.BULLET_SPREAD_JITTER;
+                let spreadAngle = b.angle + offsetAngle;
+                particles.push({
+                    x: b.x + Math.cos(spreadAngle) * CONFIG.TURRET_MUZZLE_OFFSET,
+                    y: b.y + Math.sin(spreadAngle) * CONFIG.TURRET_MUZZLE_OFFSET,
+                    vx: Math.cos(spreadAngle) * CONFIG.BULLET_SPEED,
+                    vy: Math.sin(spreadAngle) * CONFIG.BULLET_SPEED,
+                    colorKey: key,
+                    val: CONFIG.BULLET_VAL,
+                    isBig: false,
+                    hp: 1,
+                    born: performance.now(),   // 寿命计时
+                    src: 'bullet'
+                });
+            }
+        }
+    });
+}, CONFIG.BULLET_FIRE_INTERVAL);
+
+// 散弹：按批次从库存发射（库存为总价值，按最多 MAX_WAVES 波自动分摊每粒权重）
+setInterval(() => {
+    COLOR_KEYS.forEach(key => {
+        let b = BASES[key];
+        if (b.destroyed || b.shotgunPending <= 0) return;
+
+        // 粒子上限保护：存量高时整轮跳过（散弹是最主要的 O(n²) 来源）
+        if (particles.length >= CONFIG.MAX_BATTLE_PARTICLES) return;
+
+        // 本波最多 360 粒，价值 = 粒子数 × 锁定权重，不超过剩余库存
+        let particleCount = Math.max(1, Math.min(CONFIG.SHOTGUN_BATCH_SIZE, Math.floor(b.shotgunPending / b.shotgunWeight)));
+        // 库存节流：库存超过阈值时把单波规模减半（避免库存堆太多后一波全倾泻出来）
+        if (b.shotgunPending > CONFIG.SHOTGUN_MAX_STOCK) {
+            particleCount = Math.max(1, Math.floor(particleCount / 2));
+        }
+
+        // 散弹粒子独立于普通弹药：发射只消耗散弹自身库存，不占 b.ammo
+        let emitted = 0;
+        for (let i = 0; i < particleCount; i++) {
+            if (particles.length >= CONFIG.MAX_BATTLE_PARTICLES) break;   // 上限保护：中途达到也停止
+            let ang = (i / particleCount) * Math.PI * 2 + (Math.random() - 0.5) * CONFIG.SHOTGUN_ANGLE_JITTER;
+            let speed = CONFIG.SHOTGUN_SPEED_MIN + Math.random() * (CONFIG.SHOTGUN_SPEED_MAX - CONFIG.SHOTGUN_SPEED_MIN);
+            particles.push({
+                x: b.x,
+                y: b.y,
+                vx: Math.cos(ang) * speed,
+                vy: Math.sin(ang) * speed,
+                colorKey: key,
+                val: b.shotgunWeight,
+                isBig: false,
+                hp: 1,
+                born: performance.now(),   // 寿命计时
+                src: 'shotgun'
+            });
+            emitted++;
+        }
+        b.shotgunPending -= emitted * b.shotgunWeight;   // 按实际发射数扣库存
+        // 一批打完后重置权重，避免影响下一批的权重计算
+        if (b.shotgunPending <= 0) b.shotgunWeight = CONFIG.SHOTGUN_MIN_WEIGHT;
+    });
+}, CONFIG.SHOTGUN_INTERVAL_MS);
+
+// 大球：按库存逐个发射（沿当前炮口朝向）
+setInterval(() => {
+    COLOR_KEYS.forEach(key => {
+        let b = BASES[key];
+        if (b.destroyed || b.bigBallQueue.length <= 0) return;
+
+        const ballVal = b.bigBallQueue.shift();
+        const speed = getBigBallSpeed(ballVal); // 初始速度随体积变化
+
+        particles.push({
+            x: b.x,
+            y: b.y,
+            vx: Math.cos(b.angle) * speed,
+            vy: Math.sin(b.angle) * speed,
+            colorKey: key,
+            val: ballVal,
+            isBig: true,
+            hp: CONFIG.BIG_BALL_HP,
+            speed: speed,   // 恒定速率：碰撞只变方向，保持速率
+            trail: []       // 动态尾流轨迹点
+        });
+        sfxQueue.push({ t: 'missileLaunch' });   // 大球发射：借用推进喷射音
+    });
+}, CONFIG.BIG_BALL_INTERVAL_MS);
+
+function destroyBase(key) {
+    let base = BASES[key]; if (base.destroyed) return;
+    base.destroyed = true;
+    // 基地被摧毁：触发大爆炸
+    spawnExplosion(base.x, base.y, key, 2.5);
+    if (base.ammo > 0) {
+        const burstSpeed = CONFIG.BIG_BALL_AMMO_BURST_SPEED;
+        particles.push({ x: base.x, y: base.y, vx: Math.cos(base.angle) * burstSpeed, vy: Math.sin(base.angle) * burstSpeed, colorKey: key, val: base.ammo, isBig: true, hp: CONFIG.BIG_BALL_HP, speed: burstSpeed, trail: [] });
+        base.ammo = 0;
+    }
+    base.shield = 0;
+    // 基地已毁，清空待发射库存
+    base.shotgunPending = 0;
+    base.bigBallQueue.length = 0;
+
+    sfxQueue.push({ t: 'baseDestroyed' });   // 基地毁灭专属重爆音
+    addShake(9, 450);                        // 屏幕强烈震动
+    // 基地毁灭专属演出：冲击波 + 双层火花 + 残骸碎片
+    effects.push({
+        type: 'baseDestroy',
+        x: base.x, y: base.y, colorKey: key,
+        born: performance.now() / 1000,
+        sparks: Array.from({ length: CONFIG.BASE_DESTROY_SPARKS }, () => ({
+            ang: Math.random() * Math.PI * 2,
+            speed: 5 + Math.random() * 9,
+            len: 10 + Math.random() * 18
+        })),
+        debris: Array.from({ length: CONFIG.BASE_DESTROY_DEBRIS }, () => ({
+            ang: Math.random() * Math.PI * 2,
+            speed: 2.5 + Math.random() * 5,
+            size: 2.5 + Math.random() * 5,
+            rot: (Math.random() - 0.5) * 12
+        }))
+    });
+
+    // 胜利判定：场上只剩 1 个炮台即分出胜负
+    const alive = COLOR_KEYS.filter(k => !BASES[k].destroyed).length;
+    if (alive === 1 && !gameWinner) {
+        gameWinner = COLOR_KEYS.find(k => !BASES[k].destroyed);
+        sfxQueue.push({ t: 'victory' });
+    }
+}
+
+function updateBattle() {
+    // ===== 防空导弹更新：转向目标、追踪、命中爆炸 =====
+    for (let m = missiles.length - 1; m >= 0; m--) {
+        const missile = missiles[m];
+        const target = missile.target;
+        // 目标已被摧毁/消失 → 导弹失效
+        if (!target || !particles.includes(target)) {
+            missiles.splice(m, 1);
+            continue;
+        }
+
+        // 转向：导弹朝目标方向旋转（MISSILE_TURN_SPEED 上限）
+        const desiredAngle = Math.atan2(target.y - missile.y, target.x - missile.x);
+        let diff = desiredAngle - Math.atan2(missile.vy, missile.vx);
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+        const curAngle = Math.atan2(missile.vy, missile.vx) + Math.max(-CONFIG.MISSILE_TURN_SPEED, Math.min(CONFIG.MISSILE_TURN_SPEED, diff));
+        missile.vx = Math.cos(curAngle) * CONFIG.MISSILE_SPEED;
+        missile.vy = Math.sin(curAngle) * CONFIG.MISSILE_SPEED;
+
+        // 推进（帧率无关）
+        missile.x += missile.vx * timeScale;
+        missile.y += missile.vy * timeScale;
+
+        // 命中判定：导弹触及目标边缘
+        const targetRadius = Math.min(CONFIG.BIG_BALL_MAX_RADIUS, CONFIG.BIG_BALL_RADIUS_BASE + Math.log10(target.val) * CONFIG.BIG_BALL_RADIUS_FACTOR);
+        const dist = Math.hypot(target.x - missile.x, target.y - missile.y);
+        if (dist < targetRadius + missile.radius) {
+            missiles.splice(m, 1);
+            // 命中：触发火花特效
+            spawnHitFx(missile.x, missile.y, missile.colorKey);
+            // 命中：按导弹实际携带粒子扣减目标大球剩余价值（实时更新）
+            target.val = Math.max(0, target.val - missile.damage);
+            if (target.val <= 0) {
+                const idx = particles.indexOf(target);
+                if (idx !== -1) particles.splice(idx, 1);
+                // 大球被导弹击毁：按目标半径换算比例触发爆炸
+                spawnExplosion(target.x, target.y, target.colorKey, targetRadius / 15);
+            }
+        }
+    }
+
+    // 粒子寿命清理：普通子弹/散弹超时自动消散，防止场上无限堆积（O(n²) 性能爆炸）
+    const nowMs = performance.now();
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const pp = particles[i];
+        if (!pp.isBig && pp.born) {
+            const maxAge = pp.src === 'shotgun' ? CONFIG.SHOTGUN_LIFETIME_MS : CONFIG.BULLET_LIFETIME_MS;
+            if (nowMs - pp.born > maxAge) {
+                particles.splice(i, 1);
+            }
+        }
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        if (p.isBig) {
+            // 动态尾流：采样当前轨迹点，旧的随时间消散
+            if (p.trail) {
+                const now = performance.now() / 1000;
+                p.trail.push({ x: p.x, y: p.y, t: now });
+                while (p.trail.length > 0 && (now - p.trail[0].t) > CONFIG.BIG_BALL_TRAIL_LIFETIME) p.trail.shift();
+                if (p.trail.length > CONFIG.BIG_BALL_TRAIL_SAMPLES) p.trail.splice(0, p.trail.length - CONFIG.BIG_BALL_TRAIL_SAMPLES);
+            }
+            let totalEnemyShield = 0;
+            COLOR_KEYS.forEach(k => {
+                if (k !== p.colorKey && !BASES[k].destroyed) {
+                    totalEnemyShield += BASES[k].shield;
+                }
+            });
+
+            if (p.val > totalEnemyShield) {
+                let overflow = p.val - totalEnemyShield;
+                BASES[p.colorKey].shield += overflow; 
+                p.val = Math.max(0, totalEnemyShield); 
+
+                if (p.val <= 0) {
+                    // 大球价值耗尽被移除：触发爆炸
+                    spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                    particles.splice(i, 1);
+                    continue;
+                }
+            }
+        }
+        let pRadius = p.isBig ? Math.min(CONFIG.BIG_BALL_MAX_RADIUS, CONFIG.BIG_BALL_RADIUS_BASE + Math.log10(p.val) * CONFIG.BIG_BALL_RADIUS_FACTOR) : (CELL_SIZE / 2);
+
+        // 位移与子步进按 timeScale 缩放：帧率无关，任何电脑上速度一致
+        let steps = Math.max(1, Math.ceil(Math.hypot(p.vx, p.vy) * timeScale / CONFIG.MAX_PHYSICS_STEP));
+        let subVx = (p.vx * timeScale) / steps;
+        let subVy = (p.vy * timeScale) / steps;
+        let particleDestroyed = false;
+
+        for (let s = 0; s < steps; s++) {
+            p.x += subVx;
+            p.y += subVy;
+
+            if (p.x - pRadius <= 0) {
+                p.x = pRadius + 1;
+                p.vx = Math.abs(p.vx) * (p.isBig ? 1 : CONFIG.WALL_RESTITUTION);
+                renormalizeBigBall(p);
+            }
+            else if (p.x + pRadius >= bCanvas.width) {
+                p.x = bCanvas.width - pRadius - 1;
+                p.vx = -Math.abs(p.vx) * (p.isBig ? 1 : CONFIG.WALL_RESTITUTION);
+                renormalizeBigBall(p);
+            }
+            if (p.y - pRadius <= 0) {
+                p.y = pRadius + 1;
+                p.vy = Math.abs(p.vy) * (p.isBig ? 1 : CONFIG.WALL_RESTITUTION);
+                renormalizeBigBall(p);
+            }
+            else if (p.y + pRadius >= bCanvas.height) {
+                p.y = bCanvas.height - pRadius - 1;
+                p.vy = -Math.abs(p.vy) * (p.isBig ? 1 : CONFIG.WALL_RESTITUTION);
+                renormalizeBigBall(p);
+            }
+
+            // 2. 领地网格吞噬与像素更新
+            let minGx = Math.max(0, Math.floor((p.x - pRadius) / CELL_SIZE));
+            let maxGx = Math.min(GRID_SIZE - 1, Math.floor((p.x + pRadius) / CELL_SIZE));
+            let minGy = Math.max(0, Math.floor((p.y - pRadius) / CELL_SIZE));
+            let maxGy = Math.min(GRID_SIZE - 1, Math.floor((p.y + pRadius) / CELL_SIZE));
+
+            for (let gy = minGy; gy <= maxGy; gy++) {
+                for (let gx = minGx; gx <= maxGx; gx++) {
+                    let cellCenterX = gx * CELL_SIZE + CELL_SIZE / 2;
+                    let cellCenterY = gy * CELL_SIZE + CELL_SIZE / 2;
+
+                    if ((cellCenterX - p.x) ** 2 + (cellCenterY - p.y) ** 2 <= pRadius * pRadius) {
+                        if (territoryGrid[gy][gx] !== p.colorKey) {
+                            p.val -= LAND_COST;
+                            territoryGrid[gy][gx] = p.colorKey;
+
+                            setPixelOwner(gx, gy, p.colorKey);
+                            gridDirty = true;
+                            sfxQueue.push({ t: 'territoryEat' });
+
+                            if (p.val <= 0) {
+                                if (p.isBig && p.hp > 1) {
+                                    p.hp--;
+                                    p.val = Math.max(1, Math.floor(p.val * CONFIG.LAND_DEPLETE_FACTOR));
+                                } else {
+                                    if (p.isBig) spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                                    particles.splice(i, 1);
+                                    particleDestroyed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (particleDestroyed) break;
+            }
+            if (particleDestroyed) break;
+        }
+
+        if (particleDestroyed) continue;
+
+        // 3. 粒子/大球 物理碰撞
+        for (let j = i - 1; j >= 0; j--) {
+            let p2 = particles[j];
+            
+            if (p.colorKey !== p2.colorKey) {
+                let p2Radius = p2.isBig ? Math.min(CONFIG.BIG_BALL_MAX_RADIUS, CONFIG.BIG_BALL_RADIUS_BASE + Math.log10(p2.val) * CONFIG.BIG_BALL_RADIUS_FACTOR) : (CELL_SIZE / 2);
+                let dx = p.x - p2.x;
+                let dy = p.y - p2.y;
+                let dist = Math.hypot(dx, dy);
+                let minDist = pRadius + p2Radius;
+
+                if (dist < minDist && dist > 0) {
+                    let nx = dx / dist;
+                    let ny = dy / dist;
+                    let overlap = minDist - dist;
+
+                    let m1 = p.isBig ? Math.max(CONFIG.BIG_BALL_MASS_FLOOR, p.val * CONFIG.BIG_BALL_MASS_FACTOR) : 1;
+                    let m2 = p2.isBig ? Math.max(CONFIG.BIG_BALL_MASS_FLOOR, p2.val * CONFIG.BIG_BALL_MASS_FACTOR) : 1;
+                    let totalMass = m1 + m2;
+
+                    p.x += nx * overlap * (m2 / totalMass);
+                    p.y += ny * overlap * (m2 / totalMass);
+                    p2.x -= nx * overlap * (m1 / totalMass);
+                    p2.y -= ny * overlap * (m1 / totalMass);
+
+                    let kx = p.vx - p2.vx;
+                    let ky = p.vy - p2.vy;
+                    let pNorm = kx * nx + ky * ny;
+
+                    if (pNorm < 0) {
+                        let impulse = (2 * pNorm) / totalMass;
+                        p.vx -= impulse * m2 * nx * CONFIG.COLLISION_IMPULSE_DAMPING;
+                        p.vy -= impulse * m2 * ny * CONFIG.COLLISION_IMPULSE_DAMPING;
+                        p2.vx += impulse * m1 * nx * CONFIG.COLLISION_IMPULSE_DAMPING;
+                        p2.vy += impulse * m1 * ny * CONFIG.COLLISION_IMPULSE_DAMPING;
+                        // 大球速率恒定：碰撞只改变方向，动量变化后重新归一化
+                        renormalizeBigBall(p);
+                        renormalizeBigBall(p2);
+                    }
+
+                    let minVal = Math.min(p.val, p2.val); 
+                    p.val -= minVal; 
+                    p2.val -= minVal;
+
+                    if (p2.val <= 0) {
+                        if (p2.isBig && p2.hp > 1) {
+                            p2.hp--;
+                            p2.val = Math.max(1, Math.floor(minVal * CONFIG.COLLIDE_DEPLETE_FACTOR));
+                        } else {
+                            if (p2.isBig) spawnExplosion(p2.x, p2.y, p2.colorKey, 1.2);
+                            particles.splice(j, 1);
+                        }
+                    }
+
+                    if (p.val <= 0) {
+                        if (p.isBig && p.hp > 1) {
+                            p.hp--;
+                            p.val = Math.max(1, Math.floor(minVal * CONFIG.COLLIDE_DEPLETE_FACTOR));
+                        } else {
+                            if (p.isBig) spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                            particles.splice(i, 1);
+                            particleDestroyed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (particleDestroyed) continue;
+
+        // 4. 基地与护盾判定
+        COLOR_KEYS.forEach(key => {
+            if (key !== p.colorKey) {
+                let base = BASES[key]; 
+                if (base.destroyed) return;
+
+                let distToBase = Math.hypot(p.x - base.x, p.y - base.y);
+                let sRadius = getShieldRadius(base.shield);
+
+                if (base.shield > 0 && distToBase < sRadius + pRadius) {
+                    // 体积悬殊快速结算：悬殊 ≥ SHIELD_OVERWHELM_RATIO 倍时，一次定胜负，不再反复磨减
+                    const overwhelm = p.isBig && p.hp > 1;
+                    if (overwhelm && base.shield >= CONFIG.SHIELD_OVERWHELM_RATIO * p.val) {
+                        // 球体积不足护盾 1/5：球直接被护盾吞噬消失
+                        base.shield -= p.val;
+                        spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                        particles.splice(i, 1);
+                        particleDestroyed = true;
+                    } else if (overwhelm && p.val >= CONFIG.SHIELD_OVERWHELM_RATIO * base.shield) {
+                        // 护盾体积不足球 1/5：护盾直接击破，球保留继续前进
+                        p.val -= base.shield;
+                        base.shield = 0;
+                        sfxQueue.push({ t: 'shieldBreak' });   // 护盾击破音
+                    } else if (p.val <= base.shield) {
+                        base.shield -= p.val;
+                        if (p.isBig && p.hp > 1) {
+                            p.hp--;
+                            p.val = Math.max(1, Math.floor(p.val * CONFIG.COLLIDE_DEPLETE_FACTOR));
+                            // 沿法线反射（入射角 = 反射角）：速度沿球-护盾圆心连线方向镜像
+                            const safeDist = Math.max(distToBase, 0.01);
+                            const nx = (p.x - base.x) / safeDist;
+                            const ny = (p.y - base.y) / safeDist;
+                            const vDotN = p.vx * nx + p.vy * ny;
+                            p.vx -= 2 * vDotN * nx;
+                            p.vy -= 2 * vDotN * ny;
+                            renormalizeBigBall(p);
+                        } else {
+                            if (p.isBig) spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                            particles.splice(i, 1);
+                            particleDestroyed = true;
+                        }
+                    } else {
+                        p.val -= base.shield;
+                        base.shield = 0;
+                    }
+                } else if (base.shield <= 0 && distToBase < CONFIG.BASE_HIT_RADIUS + pRadius) {
+                    destroyBase(key);
+                    if (p.isBig && p.hp > 1) p.hp--;
+                    else {
+                        // 大球 hp 耗尽直接撞毁基地：触发爆炸
+                        if (p.isBig) spawnExplosion(p.x, p.y, p.colorKey, 1.2);
+                        particles.splice(i, 1);
+                        particleDestroyed = true;
+                    }
+                }
+            }
+        });
+    }
+}
+
+// ==================== 极速渲染 ====================
+function drawPlinko() {
+    pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
+    const slotTop = CONFIG.SLOT_TOP, slotBottom = CONFIG.SLOT_BOTTOM, actionTop = CONFIG.ACTION_TOP, actionBottom = CONFIG.ACTION_BOTTOM;
+
+    // 画布背景：深空渐变贴图（一次性烘焙，drawImage 零成本）
+    ensureSprites();
+    pCtx.drawImage(spriteCache.bg, 0, 0);
+
+    multiplierSlots.forEach(s => {
+        // 出口槽：风区专用青绿底色（区别于倍率槽的淡蓝）+ 呼吸光描边 + 流动上浮箭头
+        if (s.isOpen) {
+            const nowPlinko = performance.now();
+            const breathe = 0.12 + Math.abs(Math.sin(nowPlinko / 700)) * 0.1;
+            pCtx.fillStyle = `rgba(52, 211, 153, ${breathe + 0.08})`;
+            pCtx.fillRect(s.x, slotTop, s.w, slotBottom - slotTop);
+            pCtx.fillStyle = `rgba(52, 211, 153, ${breathe + 0.18})`;
+            pCtx.fillRect(s.x, slotTop - 2, s.w, 2);
+            pCtx.fillRect(s.x, slotBottom, s.w, 2);
+            // 流动向上箭头：循环上移模拟气流，上下两端渐隐
+            const flowY = ((nowPlinko / 1000) * 26) % 30;
+            pCtx.font = '13px sans-serif';
+            pCtx.textAlign = 'left';
+            for (let k = -1; k < 4; k++) {
+                const y = slotTop + 6 + k * 30 - flowY;
+                if (y < slotTop - 4 || y > slotBottom - 8) continue;
+                const norm = (y - slotTop) / (slotBottom - slotTop);
+                const fade = Math.min(1, 5 * norm) * Math.min(1, 5 * (1 - norm));
+                pCtx.fillStyle = `rgba(167, 243, 208, ${0.15 + 0.7 * fade})`;
+                pCtx.fillText('⬆', s.x + 8, y + 14);
+            }
+        } else {
+            pCtx.fillStyle = 'rgba(56, 189, 248, 0.06)';
+            pCtx.fillRect(s.x, slotTop, s.w, slotBottom - slotTop);
+        }
+
+        // 渲染倍数文本（出口槽文字居中，箭头居左不冲突）——发光感（双重绘制模拟，无 shadowBlur）
+        pCtx.font = s.isOpen ? 'bold 13px sans-serif' : '12px sans-serif';
+        pCtx.textAlign = 'center';
+        pCtx.fillStyle = s.isOpen ? 'rgba(52, 211, 153, 0.45)' : 'rgba(56, 189, 248, 0.4)';
+        pCtx.fillText(s.text, s.x + s.w / 2 + 1, slotTop + 23);
+        pCtx.fillStyle = s.isOpen ? '#a7f3d0' : '#93c5fd';
+        pCtx.fillText(s.text, s.x + s.w / 2, slotTop + 22);
+
+        // 渲染进入次数 (count) 统计（出口槽与倍率槽都显示）
+        {
+            pCtx.font = '10px sans-serif';
+            pCtx.fillStyle = s.isOpen ? '#6ee7b7' : '#60a5fa';
+            pCtx.fillText(`${s.count}次`, s.x + s.w / 2, slotTop + 42);
+        }
+    });
+
+    // 倍数槽之间绘制宽墙（实心分隔）——金属渐变贴图平铺
+    pCtx.drawImage(spriteCache.wall, 0, slotTop);
+    multiplierSlots.forEach(s => {
+        pCtx.drawImage(spriteCache.wall, s.x + s.w - CONFIG.SLOT_WALL_WIDTH / 2, slotTop);
+        pCtx.fillStyle = '#64748b';
+        pCtx.fillRect(s.x + s.w - CONFIG.SLOT_WALL_WIDTH / 2, slotTop, CONFIG.SLOT_WALL_WIDTH, 2);  // 顶边高光
+        if (!s.isOpen) { pCtx.fillStyle = '#334155'; pCtx.fillRect(s.x, slotBottom, s.w, CONFIG.SLOT_WALL_WIDTH / 2); }
+    });
+
+    // 出口下方附加上升气流层：青绿风区底色 + 流动向上箭头动画
+    {
+        const nowPlinko = performance.now();
+        multiplierSlots.forEach(s => {
+            if (!s.isOpen) return;
+            // 风区底色：青绿渐变（比出口槽稍淡）
+            const lg = pCtx.createLinearGradient(0, slotBottom + 40, 0, slotBottom + 140);
+            lg.addColorStop(0, 'rgba(52, 211, 153, 0.16)');
+            lg.addColorStop(1, 'rgba(52, 211, 153, 0.03)');
+            pCtx.fillStyle = lg;
+            pCtx.fillRect(s.x, slotBottom + 40, s.w, 100);
+            // 流动箭头：列内向上循环
+            const flowY = ((nowPlinko / 1000) * 20) % 32;
+            pCtx.font = '12px sans-serif';
+            pCtx.textAlign = 'center';
+            for (let k = -1; k < 5; k++) {
+                const y = slotBottom + 46 + k * 32 - flowY;
+                if (y < slotBottom + 40 || y > slotBottom + 132) continue;
+                const norm = (y - slotBottom - 40) / 100;
+                const fade = Math.min(1, 4 * norm) * Math.min(1, 4 * (1 - norm));
+                pCtx.fillStyle = `rgba(167, 243, 208, ${0.1 + 0.6 * fade})`;
+                pCtx.fillText('⬆', s.x + s.w / 2, y + 12);
+            }
+        });
+    }
+
+    actionSlots.forEach(s => {
+        // 机制区：霓虹绿边框区格
+        pCtx.fillStyle = 'rgba(52, 211, 153, 0.07)';
+        pCtx.fillRect(s.x, actionTop, s.w, actionBottom - actionTop);
+        pCtx.font = 'bold 16px sans-serif'; pCtx.textAlign = 'center';
+        pCtx.fillStyle = 'rgba(52, 211, 153, 0.4)';
+        pCtx.fillText(s.name, s.x + s.w / 2 + 1, actionTop + 43);
+        pCtx.fillStyle = '#6ee7b7';
+        pCtx.fillText(s.name, s.x + s.w / 2, actionTop + 42);
+    });
+
+    pCtx.strokeStyle = 'rgba(148, 163, 184, 0.3)'; pCtx.lineWidth = 1;
+    pCtx.beginPath(); pCtx.moveTo(0, actionTop); pCtx.lineTo(0, actionBottom);
+    actionSlots.forEach(s => {
+        pCtx.moveTo(s.x + s.w, actionTop); pCtx.lineTo(s.x + s.w, actionBottom);
+        pCtx.moveTo(s.x, actionBottom); pCtx.lineTo(s.x + s.w, actionBottom);
+    });
+    pCtx.stroke();
+
+    // 钉子：预渲染金属贴图 drawImage（无每帧渐变/阴影）
+    ensureSprites();
+    const pegsPr = spriteCache.peg.width / 2;
+    pegs.forEach(p => {
+        pCtx.drawImage(spriteCache.peg, p.x - pegsPr, p.y - pegsPr);
+    });
+
+    // 小球：发光球贴图 drawImage（高光/光晕已烘焙）
+    balls.forEach(b => {
+        const spr = getGlowSprite(b.colorKey, b.r);
+        pCtx.drawImage(spr, b.x - spr.width / 2, b.y - spr.height / 2);
+        // 数值标签：双重绘制模拟微光（避开 shadowBlur）
+        pCtx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        pCtx.fillText(formatVal(b.val), b.x + 1, b.y - 14);
+        pCtx.fillStyle = '#fff';
+        pCtx.font = '12px sans-serif'; pCtx.textAlign = 'center';
+        pCtx.fillText(formatVal(b.val), b.x, b.y - 15);
+    });
+}
+
+function drawBattle() {
+    // 屏幕震动：本帧按剩余震动时长线性衰减
+    const nowShake = performance.now();
+    let shakeX = 0, shakeY = 0;
+    if (shake.until > nowShake) {
+        const remaining = shake.until - nowShake;
+        const amp = shake.magnitude * (remaining / 500);   // 随时间线性衰减（基准时长 500ms）
+        shakeX = (Math.random() * 2 - 1) * amp;
+        shakeY = (Math.random() * 2 - 1) * amp;
+    }
+
+    bCtx.clearRect(0, 0, bCanvas.width, bCanvas.height);
+    bCtx.save();
+    bCtx.translate(shakeX, shakeY);
+
+    if (gridDirty) {
+        offCtx.putImageData(imgData, 0, 0);
+        gridDirty = false;
+    }
+
+    bCtx.imageSmoothingEnabled = false;
+    bCtx.drawImage(offCanvas, 0, 0, bCanvas.width, bCanvas.height);
+    bCtx.drawImage(vignetteCanvas, 0, 0);   // 叠加暗角 + 霓虹描边（缓存的，零成本）
+
+    COLOR_KEYS.forEach(key => {
+        let b = BASES[key]; if (b.destroyed) return;
+        let sRadius = getShieldRadius(b.shield);
+        if (b.shield > 0 && sRadius > 0) {
+            // 发光盾环：双层描边模拟光晕（无 shadowBlur）
+            bCtx.strokeStyle = b.color; bCtx.lineWidth = 5; bCtx.globalAlpha = 0.25;
+            bCtx.beginPath(); bCtx.arc(b.x, b.y, sRadius, 0, Math.PI * 2); bCtx.stroke();
+            bCtx.globalAlpha = 1;
+            bCtx.strokeStyle = b.color; bCtx.lineWidth = 1.8;
+            bCtx.beginPath(); bCtx.arc(b.x, b.y, sRadius, 0, Math.PI * 2); bCtx.stroke();
+            // 内部淡光晕（半透明实心圆，廉价）
+            bCtx.fillStyle = b.color + '1a';
+            bCtx.beginPath(); bCtx.arc(b.x, b.y, sRadius, 0, Math.PI * 2); bCtx.fill();
+
+            bCtx.fillStyle = '#fff'; bCtx.font = '15px sans-serif'; bCtx.textAlign = 'center';
+            bCtx.fillText('盾:' + formatVal(b.shield), b.x, b.y - sRadius - 8);
+        }
+
+        // 炮塔：同色核心 + 深色描边（无光晕）
+        bCtx.save();
+        bCtx.translate(b.x, b.y); bCtx.rotate(b.angle);
+        bCtx.fillStyle = b.color;
+        bCtx.fillRect(0, -CONFIG.TURRET_WIDTH / 2, CONFIG.TURRET_LENGTH, CONFIG.TURRET_WIDTH);
+        bCtx.strokeStyle = '#0b0f1a'; bCtx.lineWidth = 2;
+        bCtx.strokeRect(0, -CONFIG.TURRET_WIDTH / 2, CONFIG.TURRET_LENGTH, CONFIG.TURRET_WIDTH);
+        bCtx.restore();
+
+        // 基地本体：预渲染贴图 drawImage（光晕/渐变已烘焙）
+        const bs = spriteCache.base[key];
+        bCtx.drawImage(bs, b.x - bs.width / 2, b.y - bs.height / 2);
+
+        bCtx.fillStyle = '#fff'; bCtx.font = '15px sans-serif'; bCtx.textAlign = 'center';
+        bCtx.fillText('弹:' + formatVal(b.ammo), b.x, b.y + 32);
+        bCtx.font = '11px sans-serif'; bCtx.fillStyle = '#94a3b8';
+        // 散弹显示剩余粒子数（总价值 ÷ 权重）与权重
+        bCtx.fillText(`散:${Math.floor(b.shotgunPending / b.shotgunWeight)} 大:${b.bigBallQueue.length}`, b.x, b.y + 48);
+    });
+
+    particles.forEach(p => {
+        bCtx.fillStyle = COLORS_RGB[p.colorKey].hex;
+        bCtx.strokeStyle = COLORS_RGB[p.colorKey].hex;
+
+        if (p.isBig) {
+            let pr = Math.min(CONFIG.BIG_BALL_MAX_RADIUS, CONFIG.BIG_BALL_RADIUS_BASE + Math.log10(p.val) * CONFIG.BIG_BALL_RADIUS_FACTOR);
+            // 动态尾流：沿轨迹点绘制，越旧的点越小越淡（随时间流动消散）
+            if (p.trail && p.trail.length > 0) {
+                const now = performance.now() / 1000;
+                for (let k = 0; k < p.trail.length; k++) {
+                    const pt = p.trail[k];
+                    const age = (now - pt.t) / CONFIG.BIG_BALL_TRAIL_LIFETIME; // 0~1
+                    if (age >= 1 || age < 0) continue;
+                    const fade = 1 - age;
+                    const trailR = pr * fade * 0.65;
+                    if (trailR <= 0.4) continue;
+                    bCtx.globalAlpha = fade * CONFIG.BIG_BALL_TRAIL_FADE;
+                    bCtx.beginPath();
+                    bCtx.arc(pt.x, pt.y, trailR, 0, Math.PI * 2);
+                    bCtx.fill();
+                }
+                bCtx.globalAlpha = 1;
+            }
+            // 大球：发光贴图 drawImage（外发光/渐变已烘焙）
+            const spr = getGlowSprite(p.colorKey, pr);
+            bCtx.drawImage(spr, p.x - spr.width / 2, p.y - spr.height / 2);
+            if (pr >= CONFIG.BIG_BALL_TEXT_MIN_RADIUS) {
+                bCtx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                bCtx.font = 'bold 11px sans-serif'; bCtx.textAlign = 'center';
+                bCtx.fillText(`${formatVal(p.val)} (${p.hp}次)`, p.x + 1, p.y + 5);
+                bCtx.fillStyle = '#fff';
+                bCtx.fillText(`${formatVal(p.val)} (${p.hp}次)`, p.x, p.y + 4);
+            }
+        } else {
+            // 子弹：双层霓虹描边（无 shadowBlur），白色光芯
+            bCtx.strokeStyle = COLORS_RGB[p.colorKey].hex; bCtx.lineWidth = 3; bCtx.globalAlpha = 0.3;
+            bCtx.beginPath();
+            bCtx.moveTo(p.x, p.y);
+            bCtx.lineTo(p.x - p.vx * CONFIG.TRAIL_LENGTH_FACTOR, p.y - p.vy * CONFIG.TRAIL_LENGTH_FACTOR);
+            bCtx.stroke();
+            bCtx.globalAlpha = 1;
+            bCtx.lineWidth = 1.2;
+            bCtx.strokeStyle = COLORS_RGB[p.colorKey].hex;
+            bCtx.beginPath();
+            bCtx.moveTo(p.x, p.y);
+            bCtx.lineTo(p.x - p.vx * CONFIG.TRAIL_LENGTH_FACTOR, p.y - p.vy * CONFIG.TRAIL_LENGTH_FACTOR);
+            bCtx.stroke();
+            bCtx.fillStyle = '#fff';
+            bCtx.beginPath(); bCtx.arc(p.x, p.y, 1.4, 0, Math.PI * 2); bCtx.fill();
+        }
+    });
+
+    // 防空导弹绘制（弹体 + 尾焰，朝飞行方向）
+    missiles.forEach(m => {
+        const dirAngle = Math.atan2(m.vy, m.vx);
+        bCtx.save();
+        bCtx.translate(m.x, m.y);
+        bCtx.rotate(dirAngle);
+        const L = m.radius * 3;      // 弹体长度
+        const R = m.radius * 0.8;    // 弹体半径
+
+        // 尾焰（外层橙红，内层黄白）
+        bCtx.fillStyle = 'rgba(255, 140, 0, 0.7)';
+        bCtx.beginPath();
+        bCtx.moveTo(-L * 0.45, -R * 0.4);
+        bCtx.lineTo(-L * 1.2, 0);
+        bCtx.lineTo(-L * 0.45, R * 0.4);
+        bCtx.closePath(); bCtx.fill();
+        bCtx.fillStyle = 'rgba(255, 230, 120, 0.9)';
+        bCtx.beginPath();
+        bCtx.moveTo(-L * 0.45, -R * 0.2);
+        bCtx.lineTo(-L * 0.9, 0);
+        bCtx.lineTo(-L * 0.45, R * 0.2);
+        bCtx.closePath(); bCtx.fill();
+
+        // 弹体（同阵营色）—— 半透明宽层 + 实色层模拟外发光（无 shadowBlur）
+        bCtx.fillStyle = COLORS_RGB[m.colorKey].hex + '55';
+        bCtx.beginPath();
+        bCtx.ellipse(0, 0, L * 0.62, R * 1.25, 0, 0, Math.PI * 2);
+        bCtx.fill();
+        bCtx.fillStyle = COLORS_RGB[m.colorKey].hex;
+        bCtx.beginPath();
+        bCtx.ellipse(0, 0, L * 0.55, R, 0, 0, Math.PI * 2);
+        bCtx.fill();
+
+        // 弹头（白色尖锥）
+        bCtx.fillStyle = '#fff';
+        bCtx.beginPath();
+        bCtx.moveTo(L * 0.7, 0);
+        bCtx.lineTo(L * 0.2, -R * 0.55);
+        bCtx.lineTo(L * 0.2, R * 0.55);
+        bCtx.closePath(); bCtx.fill();
+
+        // 尾翼（两侧）
+        bCtx.fillStyle = COLORS_RGB[m.colorKey].hex;
+        bCtx.beginPath();
+        bCtx.moveTo(-L * 0.5, -R * 0.4);
+        bCtx.lineTo(-L * 0.8, -R * 1.4);
+        bCtx.lineTo(-L * 0.25, -R * 0.55);
+        bCtx.closePath(); bCtx.fill();
+        bCtx.beginPath();
+        bCtx.moveTo(-L * 0.5, R * 0.4);
+        bCtx.lineTo(-L * 0.8, R * 1.4);
+        bCtx.lineTo(-L * 0.25, R * 0.55);
+        bCtx.closePath(); bCtx.fill();
+
+        bCtx.restore();
+    });
+
+    // 特效绘制：爆炸、火花、基地毁灭（先清理过期特效，再按剩余寿命绘制）
+    const nowFx = performance.now() / 1000;
+    effects = effects.filter(e => {
+        const duration = e.type === 'baseDestroy' ? CONFIG.EFFECT_BASE_DESTROY_DURATION : (e.type === 'explosion' ? CONFIG.EFFECT_EXPLOSION_DURATION : CONFIG.EFFECT_HIT_DURATION);
+        return nowFx - e.born < duration;
+    });
+    effects.forEach(e => {
+        const duration = e.type === 'baseDestroy' ? CONFIG.EFFECT_BASE_DESTROY_DURATION : (e.type === 'explosion' ? CONFIG.EFFECT_EXPLOSION_DURATION : CONFIG.EFFECT_HIT_DURATION);
+        const age = nowFx - e.born;
+        const progress = age / duration; // 0~1，越接近 1 越接近消亡
+        bCtx.strokeStyle = COLORS_RGB[e.colorKey].hex;
+        bCtx.fillStyle = COLORS_RGB[e.colorKey].hex;
+
+        if (e.type === 'hit') {
+            // 命中火花：扩散的圆环，线宽与透明度随年龄递减
+            const ringR = 4 + progress * 22;
+            bCtx.globalAlpha = (1 - progress) * 0.8;
+            bCtx.lineWidth = 3 * (1 - progress) + 0.5;
+            bCtx.beginPath(); bCtx.arc(e.x, e.y, ringR, 0, Math.PI * 2); bCtx.stroke();
+        } else if (e.type === 'baseDestroy') {
+            // ===== 基地毁灭专属演出 =====
+            const e1 = Math.min(1, progress * 1.5);          // 冲击波阶段：前 2/3 膨胀
+            // 冲击波环（颜色随年龄切换：白热→橙红→敌方色）
+            const shockColor = progress < 0.3 ? '#ffffff' : progress < 0.6 ? '#ff9a3c' : COLORS_RGB[e.colorKey].hex;
+            const shockR = 20 + progress * 130;
+            bCtx.globalAlpha = (1 - progress) * 0.9;
+            bCtx.strokeStyle = shockColor;
+            bCtx.lineWidth = 7 * (1 - progress) + 1;
+            bCtx.beginPath(); bCtx.arc(e.x, e.y, shockR, 0, Math.PI * 2); bCtx.stroke();
+            // 第二道冲击波（延迟更远，扩散更快）
+            bCtx.globalAlpha = (1 - progress) * 0.35;
+            bCtx.lineWidth = 3 * (1 - progress) + 1;
+            bCtx.strokeStyle = COLORS_RGB[e.colorKey].hex;
+            bCtx.beginPath(); bCtx.arc(e.x, e.y, shockR * 1.35, 0, Math.PI * 2); bCtx.stroke();
+            // 迸射火花（速度更快、更长，营造剧烈迸溅）
+            e.sparks.forEach(sp => {
+                const sx = e.x + Math.cos(sp.ang) * sp.speed * progress * 16;
+                const sy = e.y + Math.sin(sp.ang) * sp.speed * progress * 16;
+                const ex = sx + Math.cos(sp.ang) * sp.len * (1 - progress);
+                const ey = sy + Math.sin(sp.ang) * sp.len * (1 - progress);
+                bCtx.globalAlpha = (1 - progress) * 0.95;
+                bCtx.lineWidth = 2.5 * (1 - progress) + 0.5;
+                bCtx.beginPath(); bCtx.moveTo(sx, sy); bCtx.lineTo(ex, ey); bCtx.stroke();
+            });
+            // 残骸碎片：带自转的多边形，速度较慢
+            e.debris.forEach(d => {
+                const px = e.x + Math.cos(d.ang) * d.speed * progress * 18;
+                const py = e.y + Math.sin(d.ang) * d.speed * progress * 18;
+                bCtx.globalAlpha = 1 - progress;
+                bCtx.save();
+                bCtx.translate(px, py);
+                bCtx.rotate(d.rot * progress);
+                bCtx.fillRect(-d.size / 2, -d.size / 2, d.size, d.size);
+                bCtx.restore();
+            });
+            bCtx.globalAlpha = 1;
+        } else {
+            // 爆炸：扩散圆环
+            const ringR = progress * 40 * e.scale;
+            bCtx.globalAlpha = (1 - progress) * 0.7;
+            bCtx.lineWidth = 4 * (1 - progress) + 0.5;
+            bCtx.beginPath(); bCtx.arc(e.x, e.y, ringR, 0, Math.PI * 2); bCtx.stroke();
+
+            // 爆炸：迸射火花，沿角度/速度方向推进并变淡
+            e.sparks.forEach(sp => {
+                const sx = e.x + Math.cos(sp.ang) * sp.speed * progress * 14;
+                const sy = e.y + Math.sin(sp.ang) * sp.speed * progress * 14;
+                const ex = sx + Math.cos(sp.ang) * sp.len * (1 - progress);
+                const ey = sy + Math.sin(sp.ang) * sp.len * (1 - progress);
+                bCtx.globalAlpha = (1 - progress) * 0.9;
+                bCtx.lineWidth = 2 * (1 - progress) + 0.5;
+                bCtx.beginPath(); bCtx.moveTo(sx, sy); bCtx.lineTo(ex, ey); bCtx.stroke();
+            });
+        }
+    });
+    bCtx.globalAlpha = 1;
+
+    // 胜利横幅：场上只剩 1 个炮台（处于震动坐标系，随画面一起抖动）
+    if (gameWinner) {
+        bCtx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+        bCtx.fillRect(0, bCanvas.height / 2 - 55, bCanvas.width, 110);
+        bCtx.fillStyle = COLORS_RGB[gameWinner].hex;
+        bCtx.font = 'bold 40px sans-serif';
+        bCtx.textAlign = 'center';
+        bCtx.fillText(winnerLabel(gameWinner) + ' 获胜', bCanvas.width / 2, bCanvas.height / 2 + 14);
+    }
+
+    bCtx.restore();   // 恢复震动偏移
+}
+
+function winnerLabel(key) {
+    return { blue: '蓝方', green: '绿方', yellow: '黄方', red: '红方' }[key] || key;
+}
+
+function loop() {
+    updatePlinko();
+    updateBattle();
+    flushSfxQueue();       // 出队播放音效（渲染前）
+    drawPlinko();
+    drawBattle();
+    requestAnimationFrame(loop);
+}
+
+// 启动覆盖层：点击解锁音频并开始
+const startOverlay = document.getElementById('startOverlay');
+function startGame() {
+    startOverlay.classList.add('hidden');
+    initAudio();          // 用户手势内创建 AudioContext 才能出声
+    initPlinko();         // 布局初始化放到点击时，确保画布尺寸已生效
+    spawnWave();
+    requestAnimationFrame(loop);
+}
+startOverlay.addEventListener('click', startGame);
+</script>
+</body>
+</html>
